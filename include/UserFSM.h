@@ -10,8 +10,7 @@
 enum class UserState : uint8_t {
   STARTUP = 0,
   IDLE_SAFE,
-  ARMED,
-  PAD_PREOP,
+  LAUNCH_PAD,
   POWERED,
   COASTING,
   DROGUE_DEPLOY,
@@ -28,10 +27,8 @@ inline const char *state_string(const UserState state) {
       return "STARTUP";
     case UserState::IDLE_SAFE:
       return "IDLE_SAFE";
-    case UserState::ARMED:
-      return "ARMED";
-    case UserState::PAD_PREOP:
-      return "PAD_PREOP";
+    case UserState::LAUNCH_PAD:
+      return "LAUNCH_PAD";
     case UserState::POWERED:
       return "POWERED";
     case UserState::COASTING:

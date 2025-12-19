@@ -78,11 +78,13 @@ public:
   struct Data {
     double pressure_hpa;
     double altitude_m;
+    double temperature;
   };
 
   SensorAltimeter() = default;
 
   virtual double pressure_hpa() = 0;
+  virtual double temperature()  = 0;
 
   double altitude_m(const bool update = false, const double qnh_hpa = 1013.25) {
     if (update)
@@ -98,6 +100,7 @@ class SensorGNSS : public SensorBase {
 public:
   struct Data {
     uint32_t timestamp_epoch;
+    String   utc;
     uint8_t  siv;
     double   latitude;
     double   longitude;

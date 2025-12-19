@@ -57,6 +57,10 @@ public:
   double pressure_hpa() override {
     return 0.;
   }
+
+  double temperature() override {
+    return 0.;
+  }
 };
 
 class NoGNSS final : public SensorGNSS {

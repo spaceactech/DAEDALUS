@@ -1,27 +1,16 @@
 /* BEGIN INCLUDE SYSTEM LIBRARIES */
 #include <Arduino.h>  // Arduino Framework
-                      // #include <STM32Servo.h>
-                      /* END INCLUDE SYSTEM LIBRARIES */
+#include "UserPins.h"     // User's Pins Mapping
+#include "Arduino_Extended.h"
 
-// STM32ServoList servos(TIMER_SERVO);
-
-/* END USER THREADS */
-void tick() {
-  digitalWrite(PC6, !digitalRead(PC6));
-}
-
-HardwareTimer *htim;
+TwoWire  i2c1(USER_GPIO_I2C1_SDA, USER_GPIO_I2C1_SCL);
 
 void setup() {
-  pinMode(PC6, OUTPUT);
-  digitalWrite(PC6, HIGH);
-
-  htim = new HardwareTimer(TIM7);
-  htim->setPrescaleFactor(htim->getTimerClkFreq() / 1'000'000ul);
-  htim->setOverflow(2, HERTZ_FORMAT);
-  htim->attachInterrupt(tick);
-  htim->resume();
+  Serial.begin(115200);
+  i2c1.begin();
 }
 
 void loop() {
+  i2c_detect(Serial, i2c1, 0x00, 127);
+  delay(1000);
 }

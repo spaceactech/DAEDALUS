@@ -12,6 +12,10 @@
 
 #include <STM32SD.h>
 #include <STM32Servo.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_LIS3MDL.h>
+#include <Adafruit_NeoPixel.h>
+#include <INA236.h>
 /* END INCLUDE SYSTEM LIBRARIES */
 
 /* BEGIN INCLUDE USER'S IMPLEMENTATIONS */
@@ -29,15 +33,24 @@
 /* END USER PRIVATE TYPEDEFS, INCLUDES AND MACROS */
 
 /* BEGIN SENSOR INSTANCES */
+SPIClass spi1(USER_GPIO_SPI1_MOSI, USER_GPIO_SPI1_MISO, USER_GPIO_SPI1_SCK);
+// TwoWire  i2c1(USER_GPIO_I2C1_SDA, USER_GPIO_I2C1_SCL);
+
+SFE_UBLOX_GNSS   m10s;
+INA236           ina(0x40, &i2c1);
+Adafruit_LIS3MDL lis;
+
+HardwareSerial Xbee(USER_GPIO_XBEE_RX, USER_GPIO_XBEE_TX);
+
+Adafruit_NeoPixel led(2, USER_GPIO_LED, NEO_GRB + NEO_KHZ800);
+
 SensorIMU *imu[RA_NUM_IMU] = {
-  new IMU_ADXL372(SPI, USER_GPIO_ADXL372_NSS),  // IMU #1
+  new IMU_ISM256(spi1, USER_GPIO_ISM256_NSS),  // IMU #1
 };
 SensorAltimeter *altimeter[RA_NUM_ALTIMETER] = {
   new Altimeter_BMP581(USER_GPIO_BMP581_NSS),  // Altimeter #1
 };
-SensorGNSS *gnss[RA_NUM_GNSS] = {
-  nullptr,  // GNSS #1 (No GNSS)
-};
+
 /* END SENSOR INSTANCES */
 
 /* BEGIN SENSOR STATUSES */
@@ -54,16 +67,39 @@ double   acc;
 double   alt_ref;  // Altitude at ground
 double   alt_agl;  // Altitude above ground
 double   apogee_raw;
-uint32_t seq_no{};
+uint32_t packet_count{};
 /* END PERSISTENT STATE */
 
 /* BEGIN DATA MEMORY */
 struct DataMemory {
   SensorIMU::Data       imu[RA_NUM_IMU];
   SensorAltimeter::Data altimeter[RA_NUM_ALTIMETER];
-  SensorGNSS::Data      gnss[RA_NUM_GNSS];
+
+  String mode;
+
+  uint32_t timestamp_epoch;
+  uint32_t timestamp_us{};
+
+  String  utc;
+  uint8_t siv;
+  double  latitude;
+  double  longitude;
+  double  altitude_msl;
+  uint8_t hh, mm, ss;
+
+  float batt_volt;
+  float batt_curr;
+
+  float mag_x;
+  float mag_y;
+  float mag_z;
+  float heading;
+
+  String cmd_echo;
 } data;
+
 String sd_buf;
+String tx_buf;
 /* END DATA MEMORY */
 
 /* BEGIN SD CARD */
@@ -86,6 +122,7 @@ float          pos_b = 90;
 hal::rtos::mutex_t mtx_sdio;
 hal::rtos::mutex_t mtx_spi;
 hal::rtos::mutex_t mtx_cdc;
+hal::rtos::mutex_t mtx_i2c;
 /* END USER PRIVATE VARIABLES */
 
 /* BEGIN USER PRIVATE FUNCTIONS */
@@ -95,8 +132,7 @@ uint32_t LoggerInterval() {
     case UserState::IDLE_SAFE:
       return RA_SDLOGGER_INTERVAL_IDLE;
 
-    case UserState::ARMED:
-    case UserState::PAD_PREOP:
+    case UserState::LAUNCH_PAD:
       return RA_SDLOGGER_INTERVAL_SLOW;
 
     case UserState::POWERED:
@@ -120,25 +156,73 @@ uint32_t LoggerInterval() {
 /* BEGIN USER SETUP */
 void UserSetupGPIO() {
   if constexpr (RA_LED_ENABLED) {
-    pinMode(USER_GPIO_LED, OUTPUT);
+    pinMode(USER_GPIO_BUZZER, OUTPUT);
   }
+  led.begin();
+  led.setBrightness(10);
+  led.clear();
+  led.setPixelColor(0, led.Color(255, 0, 0));
+  led.setPixelColor(1, led.Color(255, 0, 0));
+  led.show();
+  led.clear();
 }
 
 void UserSetupActuator() {
-  servos.attach(USER_GPIO_SERVO_A, RA_SERVO_MIN, RA_SERVO_MAX, RA_SERVO_MAX);
+  servos.attach(USER_GPIO_SERVO_B, RA_SERVO_MIN, RA_SERVO_MAX, RA_SERVO_MAX);
 }
 
 void UserSetupCDC() {
   if constexpr (RA_USB_DEBUG_ENABLED) {
-    Serial.begin();
+    Serial.begin(115200);
   }
 }
 
 void UserSetupSPI() {
-  SPI.setMOSI(USER_GPIO_SPI1_MOSI);
-  SPI.setMISO(USER_GPIO_SPI1_MISO);
-  SPI.setSCLK(USER_GPIO_SPI1_SCK);
-  SPI.begin();
+  spi1.setMOSI(USER_GPIO_SPI1_MOSI);
+  spi1.setMISO(USER_GPIO_SPI1_MISO);
+  spi1.setSCLK(USER_GPIO_SPI1_SCK);
+  spi1.begin();
+}
+
+void UserSetupUSART() {
+  Xbee.begin(115200);
+  if (Xbee.available()) {
+    Serial.println("Xbee Success");
+    led.setPixelColor(0, led.Color(0, 0, 255));
+    led.show();
+  }
+}
+
+void UserSetupI2C() {
+  i2c1.setSDA(USER_GPIO_I2C1_SDA);
+  i2c1.setSCL(USER_GPIO_I2C1_SCL);
+  i2c1.begin();
+}
+
+void UserSetupSensor() {
+  if (ina.begin()) {
+    Serial.println("Ina Success");
+  }
+
+  if (lis.begin_I2C(0x1c, &i2c1)) {  // hardware I2C mode, can pass in address & alt Wire
+    lis.setPerformanceMode(LIS3MDL_HIGHMODE);
+    lis.setOperationMode(LIS3MDL_CONTINUOUSMODE);
+    lis.setDataRate(LIS3MDL_DATARATE_560_HZ);
+    lis.setRange(LIS3MDL_RANGE_16_GAUSS);
+    lis.setIntThreshold(500);
+    lis.configInterrupt(false, false, true,  // enable z axis
+                        true,                // polarity
+                        false,               // don't latch
+                        true);               // enabled!
+    Serial.println("lis Success");
+  }
+
+  if (m10s.begin(i2c1, 0x42)) {
+    m10s.setI2COutput(COM_TYPE_UBX, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
+    m10s.setNavigationFrequency(25, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
+    m10s.setAutoPVT(true, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
+    m10s.setDynamicModel(DYN_MODEL_AIRBORNE4g, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
+  }
 }
 /* END USER SETUP */
 
@@ -175,6 +259,24 @@ void CB_ReadAltimeter(void *) {
     // Update apogee
     if (alt_agl > apogee_raw)
       apogee_raw = alt_agl;
+  });
+}
+
+void CB_ReadGNSS(void *) {
+  hal::rtos::interval_loop(RA_INTERVAL_GNSS_READING, [&]() -> void {
+    mtx_i2c.exec(ReadGNSS);
+  });
+}
+
+void CB_ReadINA(void *) {
+  hal::rtos::interval_loop(RA_INTERVAL_SENSORS_READING, [&]() -> void {
+    mtx_i2c.exec(ReadINA);
+  });
+}
+
+void CB_ReadMAG(void *) {
+  hal::rtos::interval_loop(RA_INTERVAL_SENSORS_READING, [&]() -> void {
+    mtx_i2c.exec(ReadMAG);
   });
 }
 
@@ -215,7 +317,7 @@ void CB_ConstructData(void *) {
     sd_buf = "";
     csv_stream_lf(sd_buf)
       << "MFC"
-      << seq_no++
+      << packet_count++
       << millis()
       << state_string(fsm.state())
 
@@ -237,13 +339,51 @@ void CB_ConstructData(void *) {
       << ReadCPUTemp()
       //
       ;
+
+    tx_buf = "";
+    csv_stream_lf(tx_buf)
+      << 1043          // TEAM_ID
+      << millis()      // MISSION_TIME (hh:mm:ss UTC)
+      << packet_count  // PACKET_COUNT
+      << data.mode     // MODE ('F' or 'S')
+
+      // 5–6
+      << state_string(fsm.state())  // STATE
+      << alt_agl                    // ALTITUDE (meters)
+
+      // 7–11
+      << data.altimeter[0].temperature   // TEMPERATURE (°C)
+      << data.altimeter[0].pressure_hpa  // PRESSURE (hPa)
+      << data.batt_volt                  // VOLTAGE (V)
+      << data.batt_curr                  // CURRENT (A)
+
+      // 12–14 Gyro (roll, pitch, yaw)
+      << data.imu[0].gyr_x  // GYRO_R
+      << data.imu[0].gyr_y  // GYRO_P
+      << data.imu[0].gyr_z  // GYRO_Y
+
+      // 15–17 Accel (roll, pitch, yaw)
+      << data.imu[0].acc_x  // ACCEL_R
+      << data.imu[0].acc_y  // ACCEL_P
+      << data.imu[0].acc_z  // ACCEL_Y
+
+      // 18–22 GPS
+      << data.utc           // GPS_TIME
+      << data.altitude_msl  // GPS_ALTITUDE
+      << data.latitude      // GPS_LATITUDE
+      << data.longitude     // GPS_LONGITUDE
+      << data.siv           // GPS_SATS
+
+      << data.cmd_echo  // CMD_ECHO
+
+      << data.heading;
   });
 }
 
 void CB_SDLogger(void *) {
   hal::rtos::interval_loop(LoggerInterval(), LoggerInterval, [&]() -> void {
     mtx_sdio.exec([&]() -> void {
-      fs_sd.file() << sd_buf;
+      fs_sd.file() << "Hellooo, testtt";
     });
   });
 }
@@ -256,10 +396,16 @@ void CB_SDSave(void *) {
   });
 }
 
+void CB_Transmit(void *) {
+  hal::rtos::interval_loop(1000ul, [&]() -> void {
+    Xbee.println(tx_buf);
+  });
+}
+
 void CB_DebugLogger(void *) {
-  hal::rtos::interval_loop(100ul, [&]() -> void {
+  hal::rtos::interval_loop(1000ul, [&]() -> void {
     mtx_cdc.exec([&]() -> void {
-      Serial.print(sd_buf);
+      Serial.println(tx_buf);
     });
   });
 }
@@ -273,22 +419,27 @@ void CB_RetainDeployment(void *) {
 /* END USER THREADS */
 
 void UserThreads() {
-  hal::rtos::scheduler.create(CB_EvalFSM, {.name = "CB_EvalFSM", .stack_size = 8192, .priority = osPriorityRealtime});
+  // hal::rtos::scheduler.create(CB_EvalFSM, {.name = "CB_EvalFSM", .stack_size = 8192, .priority = osPriorityRealtime});
 
   hal::rtos::scheduler.create(CB_ReadIMU, {.name = "CB_ReadIMU", .stack_size = 8192, .priority = osPriorityHigh});
   hal::rtos::scheduler.create(CB_ReadAltimeter, {.name = "CB_ReadAltimeter", .stack_size = 8192, .priority = osPriorityHigh});
+  // hal::rtos::scheduler.create(CB_ReadGNSS, {.name = "CB_ReadGNSS", .stack_size = 4096, .priority = osPriorityHigh});
 
-  if constexpr (RA_RETAIN_DEPLOYMENT_ENABLED)
-    hal::rtos::scheduler.create(CB_RetainDeployment, {.name = "CB_RetainDeployment", .stack_size = 4096, .priority = osPriorityHigh});
+  hal::rtos::scheduler.create(CB_ReadINA, {.name = "CB_ReadINA", .stack_size = 2048, .priority = osPriorityHigh});
+  hal::rtos::scheduler.create(CB_ReadMAG, {.name = "CB_ReadMAG", .stack_size = 2048, .priority = osPriorityHigh});
 
-  if constexpr (RA_AUTO_ZERO_ALT_ENABLED)
-    hal::rtos::scheduler.create(CB_AutoZeroAlt, {.name = "CB_AutoZeroAlt", .stack_size = 4096, .priority = osPriorityHigh});
+  // if constexpr (RA_RETAIN_DEPLOYMENT_ENABLED)
+  // hal::rtos::scheduler.create(CB_RetainDeployment, {.name = "CB_RetainDeployment", .stack_size = 4096, .priority = osPriorityHigh});
+
+  // if constexpr (RA_AUTO_ZERO_ALT_ENABLED)
+  // hal::rtos::scheduler.create(CB_AutoZeroAlt, {.name = "CB_AutoZeroAlt", .stack_size = 4096, .priority = osPriorityHigh});
 
   hal::rtos::scheduler.create(CB_ConstructData, {.name = "CB_ConstructData", .stack_size = 8192, .priority = osPriorityNormal});
   hal::rtos::scheduler.create(CB_SDLogger, {.name = "CB_SDLogger", .stack_size = 8192, .priority = osPriorityNormal});
+  hal::rtos::scheduler.create(CB_Transmit, {.name = "CB_Transmit", .stack_size = 2048, .priority = osPriorityNormal});
 
   if constexpr (RA_USB_DEBUG_ENABLED)
-    hal::rtos::scheduler.create(CB_DebugLogger, {.name = "CB_DebugLogger", .stack_size = 8192, .priority = osPriorityBelowNormal});
+    hal::rtos::scheduler.create(CB_DebugLogger, {.name = "CB_DebugLogger", .stack_size = 4096, .priority = osPriorityBelowNormal});
 
   hal::rtos::scheduler.create(CB_SDSave, {.name = "CB_SDSave", .stack_size = 8192, .priority = osPriorityLow});
 }
@@ -311,14 +462,15 @@ void setup() {
   UserSetupUSART();
   UserSetupI2C();
   UserSetupSPI();
+  UserSetupSensor();
+  delay(2000);
   /* END GPIO AND INTERFACES SETUP */
 
   /* BEGIN FILTERS SETUP */
   filter_alt.F = vdt.generate_F();
   filter_acc.F = vdt.generate_F();
   /* END FILTERS SETUP */
-
-  /* BEGIN SENSORS SETUP */
+  
   // IMU
   for (size_t i = 0; i < RA_NUM_IMU; ++i) {
     if (!imu[i])
@@ -340,16 +492,17 @@ void setup() {
   }
 
   // GNSS
-  for (size_t i = 0; i < RA_NUM_GNSS; ++i) {
-    if (!gnss[i])
-      sensors_health.gnss[i] = SensorStatus::SENSOR_NO;
-    else if (gnss[i]->begin())
-      sensors_health.gnss[i] = SensorStatus::SENSOR_OK;
-    else
-      sensors_health.gnss[i] = SensorStatus::SENSOR_ERR;
-  }
+  // for (size_t i = 0; i < RA_NUM_GNSS; ++i) {
+  //   if (!gnss[i])
+  //     sensors_health.gnss[i] = SensorStatus::SENSOR_NO;
+  //   else if (gnss[i]->begin())
+  //     sensors_health.gnss[i] = SensorStatus::SENSOR_OK;
+  //   else
+  //     sensors_health.gnss[i] = SensorStatus::SENSOR_ERR;
+  // }
 
   /* END SENSORS SETUP */
+  Serial.println("sensor setuped");
 
   /* BEGIN SYSTEM/KERNEL SETUP */
   hal::rtos::scheduler.initialize();
@@ -385,21 +538,11 @@ void EvalFSM() {
 
       if constexpr (RA_STARTUP_COUNTDOWN_ENABLED) {
         if (state_millis_elapsed >= RA_STARTUP_COUNTDOWN)
-          fsm.transfer(UserState::ARMED);
+          fsm.transfer(UserState::LAUNCH_PAD);
       }
       break;
     }
-
-    case UserState::ARMED: {
-      // <--- Next: always transfer (should wait for uplink) --->
-      if constexpr (RA_LED_ENABLED) {
-        digitalWrite(USER_GPIO_LED, 1);
-      }
-      fsm.transfer(UserState::PAD_PREOP);
-      break;
-    }
-
-    case UserState::PAD_PREOP: {
+    case UserState::LAUNCH_PAD: {
       // !!!! Next: DETECT launch !!!!
       if (fsm.on_enter()) {  // Run once
         sampler.reset();
@@ -558,21 +701,42 @@ void ReadAltimeter() {
       continue;
     data.altimeter[i].pressure_hpa = altimeter[i]->pressure_hpa();
     data.altimeter[i].altitude_m   = altimeter[i]->altitude_m();
+    data.altimeter[i].temperature  = altimeter[i]->temperature();
   }
 }
 
 void ReadGNSS() {
-  for (size_t i = 0; i < RA_NUM_GNSS; ++i) {
-    if (sensors_health.gnss[i] != SensorStatus::SENSOR_OK ||
-        !gnss[i]->read())
-      continue;
-    data.gnss[i].timestamp_epoch = gnss[i]->timestamp_epoch();
-    data.gnss[i].siv             = gnss[i]->siv();
-    data.gnss[i].latitude        = gnss[i]->latitude();
-    data.gnss[i].longitude       = gnss[i]->longitude();
-    data.gnss[i].altitude_msl    = gnss[i]->altitude_msl();
+  if (m10s.getPVT(UBLOX_CUSTOM_MAX_WAIT)) {
+    data.timestamp_epoch = m10s.getUnixEpoch(data.timestamp_us, UBLOX_CUSTOM_MAX_WAIT);
+    data.siv             = m10s.getSIV(UBLOX_CUSTOM_MAX_WAIT);
+    data.latitude        = static_cast<double>(m10s.getLatitude(UBLOX_CUSTOM_MAX_WAIT)) * 1.e-7;
+    data.longitude       = static_cast<double>(m10s.getLongitude(UBLOX_CUSTOM_MAX_WAIT)) * 1.e-7;
+    data.altitude_msl    = static_cast<float>(m10s.getAltitudeMSL(UBLOX_CUSTOM_MAX_WAIT)) * 1.e-3f;
+
+    data.hh = m10s.getHour(UBLOX_CUSTOM_MAX_WAIT);
+    data.mm = m10s.getMinute(UBLOX_CUSTOM_MAX_WAIT);
+    data.ss = m10s.getSecond(UBLOX_CUSTOM_MAX_WAIT);
   }
 }
+
+void ReadINA() {
+  data.batt_volt = ina.getBusVoltage();
+  // data.batt_curr = ina.getCurrent_mA() / 1000;  // A;
+}
+
+void ReadMAG() {
+  lis.read();
+  sensors_event_t event;
+  lis.getEvent(&event);
+
+  // in uTesla units
+  data.mag_x = event.magnetic.x;
+  data.mag_y = event.magnetic.y;
+  data.mag_z = event.magnetic.z;
+
+  data.heading = atan2(data.mag_y, data.mag_x) * 180.0 / PI;
+}
+
 
 void ActivateDeployment(const size_t index) {
   switch (index) {
@@ -601,8 +765,7 @@ void AutoZeroAlt() {
 
   switch (fsm.state()) {
     case UserState::IDLE_SAFE:
-    case UserState::ARMED:
-    case UserState::PAD_PREOP: {
+    case UserState::LAUNCH_PAD: {
       const double vel = filter_alt.kf.state_vector()[1];
       sampler.add_sample(std::abs(vel));
       if (sampler.is_sampled()) {

@@ -5,7 +5,7 @@
 #include <cstdlib>
 
 // File Name
-constexpr const char *RA_FILE_NAME = "MFC_LOGGER_";
+constexpr const char *RA_FILE_NAME = "DDL_LOGGER_";
 
 // File Extension
 constexpr const char *RA_FILE_EXT = "CSV";
@@ -33,6 +33,9 @@ constexpr bool RA_AUTO_ZERO_ALT_ENABLED = true;
 
 /* THREAD LOOP INTERVALS */
 
+// u-blox GPS comm timeout
+constexpr uint32_t UBLOX_CUSTOM_MAX_WAIT = 250ul;  
+
 // IMU Reading
 constexpr uint32_t RA_INTERVAL_IMU_READING = 5ul;  // ms
 
@@ -40,7 +43,10 @@ constexpr uint32_t RA_INTERVAL_IMU_READING = 5ul;  // ms
 constexpr uint32_t RA_INTERVAL_ALTIMETER_READING = 100ul;  // ms
 
 // GNSS Reading
-constexpr uint32_t RA_INTERVAL_GNSS_READING = 500ul;  // ms
+constexpr uint32_t RA_INTERVAL_GNSS_READING = 200ul;  // ms
+
+// GNSS Reading
+constexpr uint32_t RA_INTERVAL_SENSORS_READING = 200ul;  // ms
 
 // FSM Evaluation
 constexpr uint32_t RA_INTERVAL_FSM_EVAL = 5ul;  // ms

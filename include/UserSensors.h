@@ -2,36 +2,37 @@
 #define ROCKET_AVIONICS_TEMPLATE_USERSENSORS_H
 
 #include <LibAvionics.h>
+#include "UserConfig.h"
 #include <SPI.h>
-#include <ADXL372.h>
+#include <ISM6HG256XSensor.h>
 #include <SparkFun_BMP581_Arduino_Library.h>
+#include <SparkFun_u-blox_GNSS_v3.h>
 
-class IMU_ADXL372 final : public SensorIMU {
+TwoWire i2c1(USER_GPIO_I2C1_SDA, USER_GPIO_I2C1_SCL);
+
+class IMU_ISM256 final : public SensorIMU {
 protected:
-  ADXL372class acc;
-  float        axf{}, ayf{}, azf{};
-  double       ax{}, ay{}, az{};
+  ISM6HG256XSensor  acc;
+  ISM6HG256X_Axes_t accel, angrate;
+  double            ax{}, ay{}, az{};
+  double            gx{}, gy{}, gz{};
 
 public:
-  IMU_ADXL372(SPIClass &spi, const int cs) : SensorIMU(), acc(spi, cs) {
+  IMU_ISM256(SPIClass &spi, int cs) : SensorIMU(), acc(&spi, cs) {
   }
 
   bool begin() override {
-    acc.begin();
-    acc.setOperatingMode(FULL_BANDWIDTH);
-    acc.setOdr(ODR_6400Hz);
-    acc.setBandwidth(BW_3200Hz);
-    acc.setFilterSettling(FSP_16ms);
-    acc.enableLowNoiseOperation(true);
-    acc.disableLowPassFilter(true);
-    acc.disableHighPassFilter(true);
-    return true;
+    return acc.begin() == ISM6HG256X_OK &&
+           acc.Enable_X() == ISM6HG256X_OK &&
+           acc.Enable_HG_X() == ISM6HG256X_OK &&
+           acc.Enable_G() == ISM6HG256X_OK;
   }
 
   bool read() override {
-    acc.readAcceleration(axf, ayf, azf);
-    ax = axf, ay = ayf, az = azf;
-    return true;
+    return acc.Get_X_Axes(&accel) == ISM6HG256X_OK &&
+           acc.Get_G_Axes(&angrate) == ISM6HG256X_OK;
+    ax = accel.x, ay = accel.y, az = accel.z;
+    gx = angrate.x, gy = angrate.y, gz = angrate.z;
   }
 
   double acc_x() override {
@@ -47,15 +48,15 @@ public:
   }
 
   double gyr_x() override {
-    return 0.;
+    return gx;
   }
 
   double gyr_y() override {
-    return 0.;
+    return gy;
   }
 
   double gyr_z() override {
-    return 0.;
+    return gz;
   }
 };
 
@@ -77,7 +78,7 @@ public:
   }
 
   bool begin() override {
-    return bmp.beginSPI(PC1, 10'000'000) == BMP5_OK &&
+    return bmp.beginSPI(cs, 10'000'000) == BMP5_OK &&
            bmp.setOSRMultipliers(&bmp_osr) == BMP5_OK &&
            bmp.setODRFrequency(BMP5_ODR_10_HZ) == BMP5_OK;
   }
@@ -89,39 +90,70 @@ public:
   double pressure_hpa() override {
     return data.pressure * 0.01;  // Pa -> hPa
   }
+
+  double temperature() override {
+    return data.temperature;  
+  }
 };
 
-class GNSS1 final : public SensorGNSS {
+class GNSS_M10S final : public SensorGNSS {
+protected:
+  SFE_UBLOX_GNSS m10s;
+  uint32_t       timestamp{};
+  uint32_t       timestamp_us{};
+  String         utc{};
+  uint8_t        gps_siv{};
+  double         gps_lat{};
+  double         gps_lon{};
+  float          gps_alt{};
+  uint8_t        hh, mm, ss;
+
 public:
-  GNSS1() : SensorGNSS() {
+  GNSS_M10S() : SensorGNSS(), m10s() {
   }
 
   bool begin() override {
-    return false;
+    if (m10s.begin(i2c1, 0x42)) {
+      // m10s.setI2COutput(COM_TYPE_UBX, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
+      // m10s.setNavigationFrequency(25, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
+      // Serial.println("break");
+      // m10s.setAutoPVT(true, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
+      m10s.setDynamicModel(DYN_MODEL_AIRBORNE4g, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
+      Serial.println("break");
+    }
   }
 
   bool read() override {
-    return false;
+    if (m10s.getPVT(UBLOX_CUSTOM_MAX_WAIT)) {
+      timestamp  = m10s.getUnixEpoch(timestamp_us, UBLOX_CUSTOM_MAX_WAIT);
+      gps_siv    = m10s.getSIV(UBLOX_CUSTOM_MAX_WAIT);
+      gps_lat    = static_cast<double>(m10s.getLatitude(UBLOX_CUSTOM_MAX_WAIT)) * 1.e-7;
+      gps_lon    = static_cast<double>(m10s.getLongitude(UBLOX_CUSTOM_MAX_WAIT)) * 1.e-7;
+      gps_alt    = static_cast<float>(m10s.getAltitudeMSL(UBLOX_CUSTOM_MAX_WAIT)) * 1.e-3f;
+      uint8_t hh = m10s.getHour(UBLOX_CUSTOM_MAX_WAIT);
+      uint8_t mm = m10s.getMinute(UBLOX_CUSTOM_MAX_WAIT);
+      uint8_t ss = m10s.getSecond(UBLOX_CUSTOM_MAX_WAIT);
+    }
   }
 
   uint32_t timestamp_epoch() override {
-    return 0ul;
+    return timestamp;
   }
 
   uint8_t siv() override {
-    return 0;
+    return gps_siv;
   }
 
   double latitude() override {
-    return 0.;
+    return gps_lat;
   }
 
   double longitude() override {
-    return 0.;
+    return gps_lon;
   }
 
   double altitude_msl() override {
-    return 0.;
+    return gps_alt;
   }
 };
 
