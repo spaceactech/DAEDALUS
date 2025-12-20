@@ -75,12 +75,12 @@ struct DataMemory {
   SensorIMU::Data       imu[RA_NUM_IMU];
   SensorAltimeter::Data altimeter[RA_NUM_ALTIMETER];
 
-  String mode;
+  String mode = "F";
 
   uint32_t timestamp_epoch;
   uint32_t timestamp_us{};
 
-  String  utc;
+  char    utc[9] = "00:00:00";
   uint8_t siv;
   double  latitude;
   double  longitude;
@@ -96,6 +96,7 @@ struct DataMemory {
   float heading;
 
   String cmd_echo;
+
 } data;
 
 String sd_buf;
@@ -163,7 +164,7 @@ void UserSetupGPIO() {
   led.clear();
   led.setPixelColor(0, led.Color(255, 0, 0));
   led.setPixelColor(1, led.Color(255, 0, 0));
-  led.show();
+  // led.show();
   led.clear();
 }
 
@@ -188,8 +189,6 @@ void UserSetupUSART() {
   Xbee.begin(115200);
   if (Xbee.available()) {
     Serial.println("Xbee Success");
-    led.setPixelColor(0, led.Color(0, 0, 255));
-    led.show();
   }
 }
 
@@ -342,37 +341,37 @@ void CB_ConstructData(void *) {
 
     tx_buf = "";
     csv_stream_lf(tx_buf)
-      << 1043          // TEAM_ID
-      << millis()      // MISSION_TIME (hh:mm:ss UTC)
-      << packet_count  // PACKET_COUNT
-      << data.mode     // MODE ('F' or 'S')
+      << 1043           // TEAM_ID
+      << data.utc       // MISSION_TIME
+      << packet_count   // PACKET_COUNT
+      << data.mode      // MODE
 
       // 5–6
-      << state_string(fsm.state())  // STATE
-      << alt_agl                    // ALTITUDE (meters)
+      << state_string(fsm.state())                 // STATE
+      << String(data.altimeter[0].altitude_m, 1)   // ALTITUDE (m, 0.1)
 
       // 7–11
-      << data.altimeter[0].temperature   // TEMPERATURE (°C)
-      << data.altimeter[0].pressure_hpa  // PRESSURE (hPa)
-      << data.batt_volt                  // VOLTAGE (V)
-      << data.batt_curr                  // CURRENT (A)
+      << String(data.altimeter[0].temperature, 1)           // TEMPERATURE (°C, 0.1)
+      << String(data.altimeter[0].pressure_hpa / 10.F, 1)   // PRESSURE (kPa, 0.1)
+      << String(data.batt_volt, 1)                          // VOLTAGE (V, 0.1)
+      << data.batt_curr                          // CURRENT (A, 0.01)
 
-      // 12–14 Gyro (roll, pitch, yaw)
-      << data.imu[0].gyr_x  // GYRO_R
-      << data.imu[0].gyr_y  // GYRO_P
-      << data.imu[0].gyr_z  // GYRO_Y
+      // 12–14 Gyro
+      << data.imu[0].gyr_x   // GYRO_R
+      << data.imu[0].gyr_y   // GYRO_P
+      << data.imu[0].gyr_z   // GYRO_Y
 
-      // 15–17 Accel (roll, pitch, yaw)
+      // 15–17 Accel
       << data.imu[0].acc_x  // ACCEL_R
-      << data.imu[0].acc_y  // ACCEL_P
-      << data.imu[0].acc_z  // ACCEL_Y
+      << data.imu[0].acc_y   // ACCEL_P
+      << data.imu[0].acc_z   // ACCEL_Y
 
       // 18–22 GPS
-      << data.utc           // GPS_TIME
-      << data.altitude_msl  // GPS_ALTITUDE
-      << data.latitude      // GPS_LATITUDE
-      << data.longitude     // GPS_LONGITUDE
-      << data.siv           // GPS_SATS
+      << data.utc                       // GPS_TIME
+      << String(data.altitude_msl, 1)   // GPS_ALTITUDE (m, 0.1)
+      << String(data.latitude, 4)       // GPS_LATITUDE
+      << String(data.longitude, 4)      // GPS_LONGITUDE
+      << data.siv                       // GPS_SATS
 
       << data.cmd_echo  // CMD_ECHO
 
@@ -383,7 +382,7 @@ void CB_ConstructData(void *) {
 void CB_SDLogger(void *) {
   hal::rtos::interval_loop(LoggerInterval(), LoggerInterval, [&]() -> void {
     mtx_sdio.exec([&]() -> void {
-      fs_sd.file() << "Hellooo, testtt";
+      fs_sd.file() << tx_buf;
     });
   });
 }
@@ -421,12 +420,12 @@ void CB_RetainDeployment(void *) {
 void UserThreads() {
   // hal::rtos::scheduler.create(CB_EvalFSM, {.name = "CB_EvalFSM", .stack_size = 8192, .priority = osPriorityRealtime});
 
-  hal::rtos::scheduler.create(CB_ReadIMU, {.name = "CB_ReadIMU", .stack_size = 8192, .priority = osPriorityHigh});
+  // hal::rtos::scheduler.create(CB_ReadIMU, {.name = "CB_ReadIMU", .stack_size = 8192, .priority = osPriorityHigh});
   hal::rtos::scheduler.create(CB_ReadAltimeter, {.name = "CB_ReadAltimeter", .stack_size = 8192, .priority = osPriorityHigh});
   // hal::rtos::scheduler.create(CB_ReadGNSS, {.name = "CB_ReadGNSS", .stack_size = 4096, .priority = osPriorityHigh});
 
-  hal::rtos::scheduler.create(CB_ReadINA, {.name = "CB_ReadINA", .stack_size = 2048, .priority = osPriorityHigh});
-  hal::rtos::scheduler.create(CB_ReadMAG, {.name = "CB_ReadMAG", .stack_size = 2048, .priority = osPriorityHigh});
+  // hal::rtos::scheduler.create(CB_ReadINA, {.name = "CB_ReadINA", .stack_size = 2048, .priority = osPriorityHigh});
+  // hal::rtos::scheduler.create(CB_ReadMAG, {.name = "CB_ReadMAG", .stack_size = 2048, .priority = osPriorityHigh});
 
   // if constexpr (RA_RETAIN_DEPLOYMENT_ENABLED)
   // hal::rtos::scheduler.create(CB_RetainDeployment, {.name = "CB_RetainDeployment", .stack_size = 4096, .priority = osPriorityHigh});
@@ -436,12 +435,12 @@ void UserThreads() {
 
   hal::rtos::scheduler.create(CB_ConstructData, {.name = "CB_ConstructData", .stack_size = 8192, .priority = osPriorityNormal});
   hal::rtos::scheduler.create(CB_SDLogger, {.name = "CB_SDLogger", .stack_size = 8192, .priority = osPriorityNormal});
-  hal::rtos::scheduler.create(CB_Transmit, {.name = "CB_Transmit", .stack_size = 2048, .priority = osPriorityNormal});
+  hal::rtos::scheduler.create(CB_SDSave, {.name = "CB_SDSave", .stack_size = 8192, .priority = osPriorityLow});
+
+  // hal::rtos::scheduler.create(CB_Transmit, {.name = "CB_Transmit", .stack_size = 2048, .priority = osPriorityNormal});
 
   if constexpr (RA_USB_DEBUG_ENABLED)
     hal::rtos::scheduler.create(CB_DebugLogger, {.name = "CB_DebugLogger", .stack_size = 4096, .priority = osPriorityBelowNormal});
-
-  hal::rtos::scheduler.create(CB_SDSave, {.name = "CB_SDSave", .stack_size = 8192, .priority = osPriorityLow});
 }
 
 void setup() {
@@ -470,7 +469,7 @@ void setup() {
   filter_alt.F = vdt.generate_F();
   filter_acc.F = vdt.generate_F();
   /* END FILTERS SETUP */
-  
+
   // IMU
   for (size_t i = 0; i < RA_NUM_IMU; ++i) {
     if (!imu[i])
@@ -716,6 +715,10 @@ void ReadGNSS() {
     data.hh = m10s.getHour(UBLOX_CUSTOM_MAX_WAIT);
     data.mm = m10s.getMinute(UBLOX_CUSTOM_MAX_WAIT);
     data.ss = m10s.getSecond(UBLOX_CUSTOM_MAX_WAIT);
+
+    snprintf(data.utc, sizeof(data.utc),
+             "%02d:%02d:%02d",
+             data.hh, data.mm, data.ss);
   }
 }
 

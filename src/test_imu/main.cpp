@@ -14,7 +14,7 @@
 
 /* ===== SPI + Sensor ===== */
 SPIClass         spi1(USER_GPIO_SPI1_MOSI, USER_GPIO_SPI1_MISO, USER_GPIO_SPI1_SCK);
-ISM6HG256XSensor imu(&spi1, USER_GPIO_ISM256_NSS);
+ISM6HG256XSensor imu(&spi1, USER_GPIO_ISM256_NSS, 200'000);
 
 /* ===== Data ===== */
 ISM6HG256X_Axes_t imu_accel;
@@ -65,11 +65,16 @@ void setup() {
 
   spi1.begin();
 
+  pinMode(USER_GPIO_BMP581_NSS, OUTPUT);
+  digitalWrite(USER_GPIO_BMP581_NSS, 1);
   if (!imu.begin()) {
     Serial.println("ISM6HG256X init FAILED");
     while (1);
   }
   Serial.println("ISM6HG256X init OK");
+  digitalWrite(USER_GPIO_BMP581_NSS, 0);
+
+  
 
   imu.Enable_X();  // enable accelerometer
   imu.Enable_G();  // enable gyroscope
