@@ -11,6 +11,7 @@ enum class UserState : uint8_t {
   STARTUP = 0,
   IDLE_SAFE,
   LAUNCH_PAD,
+  ASCENT,
   POWERED,
   COASTING,
   DROGUE_DEPLOY,

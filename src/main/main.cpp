@@ -16,6 +16,7 @@
 #include <Adafruit_LIS3MDL.h>
 #include <Adafruit_NeoPixel.h>
 #include <INA236.h>
+#include "SparkFun_VL53L1X.h"
 /* END INCLUDE SYSTEM LIBRARIES */
 
 /* BEGIN INCLUDE USER'S IMPLEMENTATIONS */
@@ -34,18 +35,19 @@
 
 /* BEGIN SENSOR INSTANCES */
 SPIClass spi1(USER_GPIO_SPI1_MOSI, USER_GPIO_SPI1_MISO, USER_GPIO_SPI1_SCK);
-// TwoWire  i2c1(USER_GPIO_I2C1_SDA, USER_GPIO_I2C1_SCL);
+TwoWire  i2c1(USER_GPIO_I2C1_SDA, USER_GPIO_I2C1_SCL);
 
 SFE_UBLOX_GNSS   m10s;
 INA236           ina(0x40, &i2c1);
 Adafruit_LIS3MDL lis;
+SFEVL53L1X       tof(i2c1);
 
 HardwareSerial Xbee(USER_GPIO_XBEE_RX, USER_GPIO_XBEE_TX);
 
 Adafruit_NeoPixel led(2, USER_GPIO_LED, NEO_GRB + NEO_KHZ800);
 
 SensorIMU *imu[RA_NUM_IMU] = {
-  new IMU_ISM256(spi1, USER_GPIO_ISM256_NSS),  // IMU #1
+  // IMU #1
 };
 SensorAltimeter *altimeter[RA_NUM_ALTIMETER] = {
   new Altimeter_BMP581(USER_GPIO_BMP581_NSS),  // Altimeter #1
@@ -90,6 +92,8 @@ struct DataMemory {
   float batt_volt;
   float batt_curr;
 
+  float tof;
+
   float mag_x;
   float mag_y;
   float mag_z;
@@ -124,6 +128,7 @@ hal::rtos::mutex_t mtx_sdio;
 hal::rtos::mutex_t mtx_spi;
 hal::rtos::mutex_t mtx_cdc;
 hal::rtos::mutex_t mtx_i2c;
+hal::rtos::mutex_t mtx_uart;
 /* END USER PRIVATE VARIABLES */
 
 /* BEGIN USER PRIVATE FUNCTIONS */
@@ -164,8 +169,11 @@ void UserSetupGPIO() {
   led.clear();
   led.setPixelColor(0, led.Color(255, 0, 0));
   led.setPixelColor(1, led.Color(255, 0, 0));
-  // led.show();
+  led.show();
   led.clear();
+  digitalToggle(USER_GPIO_BUZZER);
+  delay(100);
+  digitalToggle(USER_GPIO_BUZZER);
 }
 
 void UserSetupActuator() {
@@ -220,9 +228,15 @@ void UserSetupSensor() {
     m10s.setI2COutput(COM_TYPE_UBX, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
     m10s.setNavigationFrequency(25, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
     m10s.setAutoPVT(true, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
-    m10s.setDynamicModel(DYN_MODEL_AIRBORNE4g, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
+    m10s.setDynamicModel(DYN_MODEL_AUTOMOTIVE, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);  //DYN_MODEL_AIRBORNE4g
+  }
+
+  if (tof.begin() == 0)  //Begin returns 0 on a good init
+  {
+    Serial.println("TOF Success");
   }
 }
+
 /* END USER SETUP */
 
 /* BEGIN USER THREADS */
@@ -258,24 +272,34 @@ void CB_ReadAltimeter(void *) {
     // Update apogee
     if (alt_agl > apogee_raw)
       apogee_raw = alt_agl;
+    // Serial.println("CB_ReadAltimeter");
   });
 }
 
 void CB_ReadGNSS(void *) {
   hal::rtos::interval_loop(RA_INTERVAL_GNSS_READING, [&]() -> void {
     mtx_i2c.exec(ReadGNSS);
+    // Serial.println("CB_ReadGNSS");
   });
 }
 
 void CB_ReadINA(void *) {
   hal::rtos::interval_loop(RA_INTERVAL_SENSORS_READING, [&]() -> void {
     mtx_i2c.exec(ReadINA);
+    // Serial.println("CB_ReadINA");
   });
 }
 
 void CB_ReadMAG(void *) {
   hal::rtos::interval_loop(RA_INTERVAL_SENSORS_READING, [&]() -> void {
     mtx_i2c.exec(ReadMAG);
+    // Serial.println("CB_ReadMAG");
+  });
+}
+
+void CB_ReadTOF(void *) {
+  hal::rtos::interval_loop(RA_INTERVAL_SENSORS_READING, [&]() -> void {
+    mtx_i2c.exec(ReadTOF);
   });
 }
 
@@ -292,16 +316,17 @@ void CB_EvalFSM(void *) {
       vdt.update_dt(static_cast<double>(true_interval) * 0.001);
 
       // Regenerate F with the new dt
-      filter_acc.F = vdt.generate_F();
+      // filter_acc.F = vdt.generate_F();
       filter_alt.F = vdt.generate_F();
     }
 
     // Predict states to "now"
-    filter_acc.kf.predict();
+    // filter_acc.kf.predict();
     filter_alt.kf.predict();
 
     // FSM with predicted states
     EvalFSM();
+    // Serial.println("CB_EvalFSM");
   });
 }
 
@@ -316,7 +341,8 @@ void CB_ConstructData(void *) {
     sd_buf = "";
     csv_stream_lf(sd_buf)
       << "MFC"
-      << packet_count++
+      << packet_count
+      << data.timestamp_epoch
       << millis()
       << state_string(fsm.state())
 
@@ -326,85 +352,113 @@ void CB_ConstructData(void *) {
       << acc
       << filter_acc.kf.state()  // ACC
 
+      << data.imu[0].gyr_x  // GYRO_R
+      << data.imu[0].gyr_y  // GYRO_P
+      << data.imu[0].gyr_z  // GYRO_Y
+
+      << data.mag_x
+      << data.mag_y
+      << data.mag_z
+
+      << data.utc                      // GPS_TIME
+      << String(data.altitude_msl, 1)  // GPS_ALTITUDE (m, 0.1)
+      << String(data.latitude, 4)      // GPS_LATITUDE
+      << String(data.longitude, 4)     // GPS_LONGITUDE
+      << data.siv                      // GPS_SATS
+
       << filter_alt.kf.state_vector()[1]  // VEL
       << filter_alt.kf.state_vector()[0]  // POS
+      << data.tof
       << data.altimeter[0].altitude_m
+      << data.altimeter[0].temperature
       << data.altimeter[0].pressure_hpa
       << alt_agl
       << alt_ref
       << apogee_raw
 
       << pos_a  // Servo A
-      << ReadCPUTemp()
-      //
-      ;
+      << ReadCPUTemp();
 
     tx_buf = "";
     csv_stream_lf(tx_buf)
-      << 1043           // TEAM_ID
-      << data.utc       // MISSION_TIME
-      << packet_count   // PACKET_COUNT
-      << data.mode      // MODE
+      << 1043          // TEAM_ID
+      << data.utc      // MISSION_TIME
+      << packet_count  // PACKET_COUNT
+      << data.mode     // MODE
 
       // 5–6
-      << state_string(fsm.state())                 // STATE
-      << String(data.altimeter[0].altitude_m, 1)   // ALTITUDE (m, 0.1)
+      << state_string(fsm.state())                // STATE
+      << String(data.altimeter[0].altitude_m, 1)  // ALTITUDE (m, 0.1)
 
       // 7–11
-      << String(data.altimeter[0].temperature, 1)           // TEMPERATURE (°C, 0.1)
-      << String(data.altimeter[0].pressure_hpa / 10.F, 1)   // PRESSURE (kPa, 0.1)
-      << String(data.batt_volt, 1)                          // VOLTAGE (V, 0.1)
-      << data.batt_curr                          // CURRENT (A, 0.01)
+      << String(data.altimeter[0].temperature, 1)          // TEMPERATURE (°C, 0.1)
+      << String(data.altimeter[0].pressure_hpa / 10.F, 1)  // PRESSURE (kPa, 0.1)
+      << String(data.batt_volt, 1)                         // VOLTAGE (V, 0.1)
+      << data.batt_curr                                    // CURRENT (A, 0.01)
+
+      << 0.f << 0.f << 0.f
+      << 0.f << 0.f << 0.f
 
       // 12–14 Gyro
-      << data.imu[0].gyr_x   // GYRO_R
-      << data.imu[0].gyr_y   // GYRO_P
-      << data.imu[0].gyr_z   // GYRO_Y
+      // << data.imu[0].gyr_x // GYRO_R
+      // << data.imu[0].gyr_y  // GYRO_P
+      // << data.imu[0].gyr_z  // GYRO_Y
 
-      // 15–17 Accel
-      << data.imu[0].acc_x  // ACCEL_R
-      << data.imu[0].acc_y   // ACCEL_P
-      << data.imu[0].acc_z   // ACCEL_Y
+      // // 15–17 Accel
+      // << data.imu[0].acc_x  // ACCEL_R
+      // << data.imu[0].acc_y  // ACCEL_P
+      // << data.imu[0].acc_z  // ACCEL_Y
 
       // 18–22 GPS
-      << data.utc                       // GPS_TIME
-      << String(data.altitude_msl, 1)   // GPS_ALTITUDE (m, 0.1)
-      << String(data.latitude, 4)       // GPS_LATITUDE
-      << String(data.longitude, 4)      // GPS_LONGITUDE
-      << data.siv                       // GPS_SATS
+      << data.utc                      // GPS_TIME
+      << String(data.altitude_msl, 1)  // GPS_ALTITUDE (m, 0.1)
+      << String(data.latitude, 4)      // GPS_LATITUDE
+      << String(data.longitude, 4)     // GPS_LONGITUDE
+      << data.siv                      // GPS_SATS
 
       << data.cmd_echo  // CMD_ECHO
 
       << data.heading;
+    // Serial.println("CB_ConstructData");
   });
 }
 
 void CB_SDLogger(void *) {
-  hal::rtos::interval_loop(LoggerInterval(), LoggerInterval, [&]() -> void {
+  hal::rtos::interval_loop(1000ul, [&]() -> void {  //LoggerInterval(), LoggerInterval, [&]() -> void {
     mtx_sdio.exec([&]() -> void {
-      fs_sd.file() << tx_buf;
+      fs_sd.file() << sd_buf;
+      Serial.println("logged");
+      // Serial.println("CB_SDLogger");
     });
   });
 }
 
-void CB_SDSave(void *) {
+void CB_SDSaveandTransmit(void *) {
   hal::rtos::interval_loop(1000ul, [&]() -> void {
     mtx_sdio.exec([&]() -> void {
+      fs_sd.file() << sd_buf;
       fs_sd.file().flush();
+      Xbee.println(tx_buf);
+      packet_count++;
+      Serial.println("SDSave");
     });
   });
 }
 
 void CB_Transmit(void *) {
   hal::rtos::interval_loop(1000ul, [&]() -> void {
-    Xbee.println(tx_buf);
+    mtx_uart.exec([&]() -> void {
+      Xbee.println(tx_buf);
+      packet_count++;
+    });
   });
 }
 
 void CB_DebugLogger(void *) {
   hal::rtos::interval_loop(1000ul, [&]() -> void {
     mtx_cdc.exec([&]() -> void {
-      Serial.println(tx_buf);
+      Serial.println(sd_buf);
+      // Serial.println("CB_DebugLogger");
     });
   });
 }
@@ -415,29 +469,48 @@ void CB_RetainDeployment(void *) {
   });
 }
 
+void CB_NeoPixelBlink(void *) {
+  static bool on = false;
+
+  hal::rtos::interval_loop(1000ul, [&]() -> void {
+    if (on) {
+      led.setPixelColor(0, led.Color(255, 0, 0));  // GREEN
+      led.setPixelColor(1, led.Color(255, 0, 0));
+    } else {
+      led.clear();
+    }
+    led.show();
+    on = !on;
+  });
+}
+
 /* END USER THREADS */
 
 void UserThreads() {
-  // hal::rtos::scheduler.create(CB_EvalFSM, {.name = "CB_EvalFSM", .stack_size = 8192, .priority = osPriorityRealtime});
+  hal::rtos::scheduler.create(CB_EvalFSM, {.name = "CB_EvalFSM", .stack_size = 4096, .priority = osPriorityRealtime});
 
   // hal::rtos::scheduler.create(CB_ReadIMU, {.name = "CB_ReadIMU", .stack_size = 8192, .priority = osPriorityHigh});
   hal::rtos::scheduler.create(CB_ReadAltimeter, {.name = "CB_ReadAltimeter", .stack_size = 8192, .priority = osPriorityHigh});
-  // hal::rtos::scheduler.create(CB_ReadGNSS, {.name = "CB_ReadGNSS", .stack_size = 4096, .priority = osPriorityHigh});
+  hal::rtos::scheduler.create(CB_ReadGNSS, {.name = "CB_ReadGNSS", .stack_size = 4096, .priority = osPriorityHigh});
 
-  // hal::rtos::scheduler.create(CB_ReadINA, {.name = "CB_ReadINA", .stack_size = 2048, .priority = osPriorityHigh});
-  // hal::rtos::scheduler.create(CB_ReadMAG, {.name = "CB_ReadMAG", .stack_size = 2048, .priority = osPriorityHigh});
+  hal::rtos::scheduler.create(CB_ReadINA, {.name = "CB_ReadINA", .stack_size = 4096, .priority = osPriorityHigh});
+  hal::rtos::scheduler.create(CB_ReadMAG, {.name = "CB_ReadMAG", .stack_size = 4096, .priority = osPriorityHigh});
+  hal::rtos::scheduler.create(CB_ReadTOF, {.name = "CB_ReadTOF", .stack_size = 4096, .priority = osPriorityAboveNormal});
 
   // if constexpr (RA_RETAIN_DEPLOYMENT_ENABLED)
   // hal::rtos::scheduler.create(CB_RetainDeployment, {.name = "CB_RetainDeployment", .stack_size = 4096, .priority = osPriorityHigh});
 
   // if constexpr (RA_AUTO_ZERO_ALT_ENABLED)
-  // hal::rtos::scheduler.create(CB_AutoZeroAlt, {.name = "CB_AutoZeroAlt", .stack_size = 4096, .priority = osPriorityHigh});
+  //   hal::rtos::scheduler.create(CB_AutoZeroAlt, {.name = "CB_AutoZeroAlt", .stack_size = 4096, .priority = osPriorityHigh});
 
-  hal::rtos::scheduler.create(CB_ConstructData, {.name = "CB_ConstructData", .stack_size = 8192, .priority = osPriorityNormal});
-  hal::rtos::scheduler.create(CB_SDLogger, {.name = "CB_SDLogger", .stack_size = 8192, .priority = osPriorityNormal});
-  hal::rtos::scheduler.create(CB_SDSave, {.name = "CB_SDSave", .stack_size = 8192, .priority = osPriorityLow});
+  hal::rtos::scheduler.create(CB_ConstructData, {.name = "CB_ConstructData", .stack_size = 4096, .priority = osPriorityBelowNormal});
 
-  // hal::rtos::scheduler.create(CB_Transmit, {.name = "CB_Transmit", .stack_size = 2048, .priority = osPriorityNormal});
+  // hal::rtos::scheduler.create(CB_SDLogger, {.name = "CB_SDLogger", .stack_size = 8192, .priority = osPriorityNormal});
+  hal::rtos::scheduler.create(CB_SDSaveandTransmit, {.name = "CB_SDSaveandTransmit", .stack_size = 8192, .priority = osPriorityNormal});
+
+  // hal::rtos::scheduler.create(CB_Transmit, {.name = "CB_Transmit", .stack_size = 8192, .priority = osPriorityNormal});
+
+  hal::rtos::scheduler.create(CB_NeoPixelBlink, {.name = "CB_NeoPixelBlink", .stack_size = 1028, .priority = osPriorityBelowNormal});
 
   if constexpr (RA_USB_DEBUG_ENABLED)
     hal::rtos::scheduler.create(CB_DebugLogger, {.name = "CB_DebugLogger", .stack_size = 4096, .priority = osPriorityBelowNormal});
@@ -448,7 +521,7 @@ void setup() {
   SD.setDx(USER_GPIO_SDIO_DAT0, USER_GPIO_SDIO_DAT1, USER_GPIO_SDIO_DAT2, USER_GPIO_SDIO_DAT3);
   SD.setCMD(USER_GPIO_SDIO_CMD);
   SD.setCK(USER_GPIO_SDIO_CK);
-  SD.begin();
+  bool status = SD.begin();
   fs_sd.find_file_name(RA_FILE_NAME, RA_FILE_EXT);
   fs_sd.open_one<FsMode::WRITE>();
   sd_buf.reserve(1024);
@@ -458,27 +531,17 @@ void setup() {
   UserSetupGPIO();
   UserSetupActuator();
   UserSetupCDC();
+  delay(2000);
   UserSetupUSART();
   UserSetupI2C();
   UserSetupSPI();
   UserSetupSensor();
-  delay(2000);
   /* END GPIO AND INTERFACES SETUP */
 
   /* BEGIN FILTERS SETUP */
   filter_alt.F = vdt.generate_F();
-  filter_acc.F = vdt.generate_F();
+  // filter_acc.F = vdt.generate_F();
   /* END FILTERS SETUP */
-
-  // IMU
-  for (size_t i = 0; i < RA_NUM_IMU; ++i) {
-    if (!imu[i])
-      sensors_health.imu[i] = SensorStatus::SENSOR_NO;
-    else if (imu[i]->begin())
-      sensors_health.imu[i] = SensorStatus::SENSOR_OK;
-    else
-      sensors_health.imu[i] = SensorStatus::SENSOR_ERR;
-  }
 
   // Altimeter
   for (size_t i = 0; i < RA_NUM_ALTIMETER; ++i) {
@@ -490,18 +553,21 @@ void setup() {
       sensors_health.altimeter[i] = SensorStatus::SENSOR_ERR;
   }
 
-  // GNSS
-  // for (size_t i = 0; i < RA_NUM_GNSS; ++i) {
-  //   if (!gnss[i])
-  //     sensors_health.gnss[i] = SensorStatus::SENSOR_NO;
-  //   else if (gnss[i]->begin())
-  //     sensors_health.gnss[i] = SensorStatus::SENSOR_OK;
-  //   else
-  //     sensors_health.gnss[i] = SensorStatus::SENSOR_ERR;
-  // }
-
   /* END SENSORS SETUP */
+
+  //ZeroALT
+  ReadAltimeter();
+  alt_ref = data.altimeter[0].altitude_m;
+
+  //Debug
   Serial.println("sensor setuped");
+  Serial.println(status);
+  if (!fs_sd.file()) {
+    Serial.println("SD FILE OPEN FAILED");
+  }
+
+  led.setPixelColor(1, led.Color(0, 0, 255));
+  led.show();
 
   /* BEGIN SYSTEM/KERNEL SETUP */
   hal::rtos::scheduler.initialize();
@@ -520,7 +586,7 @@ void EvalFSM() {
     case UserState::STARTUP: {
       // <--- Next: always transfer --->
       if constexpr (RA_LED_ENABLED) {
-        digitalWrite(USER_GPIO_LED, 0);
+        digitalWrite(USER_GPIO_BUZZER, 0);
       }
       fsm.transfer(UserState::IDLE_SAFE);
       break;
@@ -546,67 +612,71 @@ void EvalFSM() {
       if (fsm.on_enter()) {  // Run once
         sampler.reset();
         sampler.set_capacity(RA_LAUNCH_SAMPLES, /*recount*/ false);
-        sampler.set_threshold(RA_LAUNCH_ACC, /*recount*/ false);
+        // sampler.set_threshold(RA_LAUNCH_ACC, /*recount*/ false);
+        sampler.set_threshold(RA_LAUNCH_ALT, /*recount*/ false);  //Balloon
       }
 
       // sampler.add_sample(acc);  // Use raw acceleration, unfiltered
-      sampler.add_sample(filter_acc.kf.state());  // Use filtered acceleration
+      // sampler.add_sample(filter_acc.kf.state());  // Use filtered acceleration
+      sampler.add_sample(alt_agl);  // Use filtered alt Ballon
+
 
       if (sampler.is_sampled() &&
           sampler.over_by_under<double>() > RA_TRUE_TO_FALSE_RATIO) {
         if constexpr (RA_LED_ENABLED) {
-          digitalWrite(USER_GPIO_LED, 0);
+          digitalWrite(USER_GPIO_BUZZER, 0);
         }
-        fsm.transfer(UserState::POWERED);
+        fsm.transfer(UserState::ASCENT);
       }
       break;
     }
 
-    case UserState::POWERED: {
-      // !!!! Next: DETECT motor burnout !!!!
-      if (fsm.on_enter()) {  // Run once
-        sampler.reset();
-        sampler.set_capacity(RA_BURNOUT_SAMPLES, /*recount*/ false);
-        sampler.set_threshold(RA_BURNOUT_ACC, /*recount*/ false);
-        state_millis_start = millis();
-      }
+      // case UserState::POWERED: {
+      //   // !!!! Next: DETECT motor burnout !!!!
+      //   if (fsm.on_enter()) {  // Run once
+      //     sampler.reset();
+      //     sampler.set_capacity(RA_BURNOUT_SAMPLES, /*recount*/ false);
+      //     sampler.set_threshold(RA_BURNOUT_ACC, /*recount*/ false);
+      //     state_millis_start = millis();
+      //   }
 
-      // sampler.add_sample(acc);  // Use raw acceleration, unfiltered
-      sampler.add_sample(filter_acc.kf.state());  // Use filtered acceleration
-      state_millis_elapsed = millis() - state_millis_start;
+      //   // sampler.add_sample(acc);  // Use raw acceleration, unfiltered
+      //   sampler.add_sample(filter_acc.kf.state());  // Use filtered acceleration
+      //   state_millis_elapsed = millis() - state_millis_start;
 
-      if (state_millis_elapsed >= RA_TIME_TO_BURNOUT_MAX ||
-          (state_millis_elapsed >= RA_TIME_TO_BURNOUT_MIN &&
-           sampler.is_sampled() &&
-           sampler.under_by_over<double>() > RA_TRUE_TO_FALSE_RATIO))
-        fsm.transfer(UserState::COASTING);
-      break;
-    }
+      //   if (state_millis_elapsed >= RA_TIME_TO_BURNOUT_MAX ||
+      //       (state_millis_elapsed >= RA_TIME_TO_BURNOUT_MIN &&
+      //        sampler.is_sampled() &&
+      //        sampler.under_by_over<double>() > RA_TRUE_TO_FALSE_RATIO))
+      //     fsm.transfer(UserState::COASTING);
+      //   break;
+      // }
 
-    case UserState::COASTING: {
+    case UserState::ASCENT: {
       // !!!! Next: DETECT apogee !!!!
       if (fsm.on_enter()) {  // Run once
-        sampler.reset();
-        sampler.set_capacity(RA_APOGEE_SAMPLES, /*recount*/ false);
-        sampler.set_threshold(RA_APOGEE_VEL, /*recount*/ false);
+        // sampler.reset();
+        // sampler.set_capacity(RA_APOGEE_SAMPLES, /*recount*/ false);
+        // sampler.set_threshold(RA_APOGEE_VEL, /*recount*/ false);
         state_millis_start = millis();
       }
 
-      const double vel = filter_alt.kf.state_vector()[1];
-      sampler.add_sample(std::abs(vel));
+      // const double vel = filter_alt.kf.state_vector()[1];
+      // sampler.add_sample(std::abs(vel));
       state_millis_elapsed = millis() - state_millis_start;
 
-      if (state_millis_elapsed >= RA_TIME_TO_APOGEE_MAX ||
-          (state_millis_elapsed >= RA_TIME_TO_APOGEE_MIN &&
-           sampler.is_sampled() &&
-           sampler.under_by_over<double>() > RA_TRUE_TO_FALSE_RATIO))
+      if (state_millis_elapsed >= RA_TIME_TO_APOGEE_MAX)
         fsm.transfer(UserState::DROGUE_DEPLOY);
+      //     (state_millis_elapsed >= RA_TIME_TO_APOGEE_MIN &&
+      //      sampler.is_sampled() &&
+      //      sampler.under_by_over<double>() > RA_TRUE_TO_FALSE_RATIO))
+
       break;
     }
 
     case UserState::DROGUE_DEPLOY: {
       // <--- Next: activate pyro/servo and always transfer --->
-      ActivateDeployment(/*index*/ 0);
+      // ActivateDeployment(/*index*/ 0);
       fsm.transfer(UserState::DROGUE_DESCEND);
       break;
     }
@@ -617,26 +687,25 @@ void EvalFSM() {
         sampler.reset();
         sampler.set_capacity(RA_MAIN_SAMPLES, /*recount*/ false);
         sampler.set_threshold(RA_MAIN_ALT_COMPENSATED, /*recount*/ false);
-        sampler_overspeed.reset();
-        sampler_overspeed.set_threshold(RA_MAIN_OVERSPEED_VEL, /*recount*/ false);
+        // sampler_overspeed.reset();
+        // sampler_overspeed.set_threshold(RA_MAIN_OVERSPEED_VEL, /*recount*/ false);
         state_millis_start = millis();
       }
 
       sampler.add_sample(alt_agl);
-      const double vel = filter_alt.kf.state_vector()[1];
-      sampler_overspeed.add_sample(std::abs(vel));
+      // const double vel = filter_alt.kf.state_vector()[1];
+      // sampler_overspeed.add_sample(std::abs(vel));
       state_millis_elapsed = millis() - state_millis_start;
 
-      const bool cond_timeout   = state_millis_elapsed >= RA_TIME_TO_MAIN_MAX;
+      // const bool cond_timeout   = state_millis_elapsed >= RA_TIME_TO_MAIN_MAX;
       const bool cond_min_time  = state_millis_elapsed >= RA_TIME_TO_MAIN_MIN;
       const bool cond_alt_lower = sampler.is_sampled() &&
                                   sampler.under_by_over<double>() > RA_TRUE_TO_FALSE_RATIO;
-      const bool cond_overspeed = sampler_overspeed.is_sampled() &&
-                                  sampler_overspeed.over_by_under<double>() > RA_TRUE_TO_FALSE_RATIO;
+      // const bool cond_overspeed = sampler_overspeed.is_sampled() &&
+      //                             sampler_overspeed.over_by_under<double>() > RA_TRUE_TO_FALSE_RATIO;
 
-      if ((cond_timeout) ||
-          (cond_min_time && cond_alt_lower) ||
-          (cond_min_time && cond_overspeed))
+      if (cond_alt_lower)
+        // || (cond_min_time && cond_overspeed))
         fsm.transfer(UserState::MAIN_DEPLOY);
 
       break;
@@ -644,10 +713,11 @@ void EvalFSM() {
 
     case UserState::MAIN_DEPLOY: {
       // <--- Next: activate pyro/servo and always transfer --->
-      // ActivateDeployment(/*index*/ 1);
+      ActivateDeployment(/*index*/ 0);
       fsm.transfer(UserState::MAIN_DESCEND);
       break;
     }
+
 
     case UserState::MAIN_DESCEND: {
       // !!!! Next: DETECT landing !!!!
@@ -668,7 +738,7 @@ void EvalFSM() {
 
     case UserState::LANDED: {
       if constexpr (RA_LED_ENABLED) {
-        digitalWrite(USER_GPIO_LED, 1);
+        digitalWrite(USER_GPIO_BUZZER, 1);
       }
       break;
     }
@@ -738,6 +808,16 @@ void ReadMAG() {
   data.mag_z = event.magnetic.z;
 
   data.heading = atan2(data.mag_y, data.mag_x) * 180.0 / PI;
+}
+
+void ReadTOF() {
+  tof.startRanging();  //Write configuration bytes to initiate measurement
+  while (!tof.checkForDataReady()) {
+    delay(1);
+  }
+  data.tof = tof.getDistance();  //Get the result of the measurement from the sensor
+  tof.clearInterrupt();
+  tof.stopRanging();
 }
 
 

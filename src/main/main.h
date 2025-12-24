@@ -7,4 +7,6 @@ extern void ReadINA();
 
 extern void ReadMAG();
 
+extern void ReadTOF();
+
 #endif  //ROCKET_AVIONICS_TEMPLATE_MAIN_H

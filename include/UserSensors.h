@@ -8,7 +8,7 @@
 #include <SparkFun_BMP581_Arduino_Library.h>
 #include <SparkFun_u-blox_GNSS_v3.h>
 
-TwoWire i2c1(USER_GPIO_I2C1_SDA, USER_GPIO_I2C1_SCL);
+// TwoWire i2c1(USER_GPIO_I2C1_SDA, USER_GPIO_I2C1_SCL);
 
 class IMU_ISM256 final : public SensorIMU {
 protected:
@@ -96,65 +96,65 @@ public:
   }
 };
 
-class GNSS_M10S final : public SensorGNSS {
-protected:
-  SFE_UBLOX_GNSS m10s;
-  uint32_t       timestamp{};
-  uint32_t       timestamp_us{};
-  String         utc{};
-  uint8_t        gps_siv{};
-  double         gps_lat{};
-  double         gps_lon{};
-  float          gps_alt{};
-  uint8_t        hh, mm, ss;
+// class GNSS_M10S final : public SensorGNSS {
+// protected:
+//   SFE_UBLOX_GNSS m10s;
+//   uint32_t       timestamp{};
+//   uint32_t       timestamp_us{};
+//   String         utc{};
+//   uint8_t        gps_siv{};
+//   double         gps_lat{};
+//   double         gps_lon{};
+//   float          gps_alt{};
+//   uint8_t        hh, mm, ss;
 
-public:
-  GNSS_M10S() : SensorGNSS(), m10s() {
-  }
+// public:
+//   GNSS_M10S() : SensorGNSS(), m10s() {
+//   }
 
-  bool begin() override {
-    if (m10s.begin(i2c1, 0x42)) {
-      // m10s.setI2COutput(COM_TYPE_UBX, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
-      // m10s.setNavigationFrequency(25, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
-      // Serial.println("break");
-      // m10s.setAutoPVT(true, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
-      m10s.setDynamicModel(DYN_MODEL_AIRBORNE4g, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
-      Serial.println("break");
-    }
-  }
+//   bool begin() override {
+//     if (m10s.begin(i2c1, 0x42)) {
+//       // m10s.setI2COutput(COM_TYPE_UBX, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
+//       // m10s.setNavigationFrequency(25, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
+//       // Serial.println("break");
+//       // m10s.setAutoPVT(true, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
+//       m10s.setDynamicModel(DYN_MODEL_AIRBORNE4g, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
+//       Serial.println("break");
+//     }
+//   }
 
-  bool read() override {
-    if (m10s.getPVT(UBLOX_CUSTOM_MAX_WAIT)) {
-      timestamp  = m10s.getUnixEpoch(timestamp_us, UBLOX_CUSTOM_MAX_WAIT);
-      gps_siv    = m10s.getSIV(UBLOX_CUSTOM_MAX_WAIT);
-      gps_lat    = static_cast<double>(m10s.getLatitude(UBLOX_CUSTOM_MAX_WAIT)) * 1.e-7;
-      gps_lon    = static_cast<double>(m10s.getLongitude(UBLOX_CUSTOM_MAX_WAIT)) * 1.e-7;
-      gps_alt    = static_cast<float>(m10s.getAltitudeMSL(UBLOX_CUSTOM_MAX_WAIT)) * 1.e-3f;
-      uint8_t hh = m10s.getHour(UBLOX_CUSTOM_MAX_WAIT);
-      uint8_t mm = m10s.getMinute(UBLOX_CUSTOM_MAX_WAIT);
-      uint8_t ss = m10s.getSecond(UBLOX_CUSTOM_MAX_WAIT);
-    }
-  }
+//   bool read() override {
+//     if (m10s.getPVT(UBLOX_CUSTOM_MAX_WAIT)) {
+//       timestamp  = m10s.getUnixEpoch(timestamp_us, UBLOX_CUSTOM_MAX_WAIT);
+//       gps_siv    = m10s.getSIV(UBLOX_CUSTOM_MAX_WAIT);
+//       gps_lat    = static_cast<double>(m10s.getLatitude(UBLOX_CUSTOM_MAX_WAIT)) * 1.e-7;
+//       gps_lon    = static_cast<double>(m10s.getLongitude(UBLOX_CUSTOM_MAX_WAIT)) * 1.e-7;
+//       gps_alt    = static_cast<float>(m10s.getAltitudeMSL(UBLOX_CUSTOM_MAX_WAIT)) * 1.e-3f;
+//       uint8_t hh = m10s.getHour(UBLOX_CUSTOM_MAX_WAIT);
+//       uint8_t mm = m10s.getMinute(UBLOX_CUSTOM_MAX_WAIT);
+//       uint8_t ss = m10s.getSecond(UBLOX_CUSTOM_MAX_WAIT);
+//     }
+//   }
 
-  uint32_t timestamp_epoch() override {
-    return timestamp;
-  }
+//   uint32_t timestamp_epoch() override {
+//     return timestamp;
+//   }
 
-  uint8_t siv() override {
-    return gps_siv;
-  }
+//   uint8_t siv() override {
+//     return gps_siv;
+//   }
 
-  double latitude() override {
-    return gps_lat;
-  }
+//   double latitude() override {
+//     return gps_lat;
+//   }
 
-  double longitude() override {
-    return gps_lon;
-  }
+//   double longitude() override {
+//     return gps_lon;
+//   }
 
-  double altitude_msl() override {
-    return gps_alt;
-  }
-};
+//   double altitude_msl() override {
+//     return gps_alt;
+//   }
+// };
 
 #endif  //ROCKET_AVIONICS_TEMPLATE_USERSENSORS_H

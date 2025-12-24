@@ -11,7 +11,7 @@ constexpr const char *RA_FILE_NAME = "DDL_LOGGER_";
 constexpr const char *RA_FILE_EXT = "CSV";
 
 // Number of IMU sensors
-constexpr size_t RA_NUM_IMU = 1;
+constexpr size_t RA_NUM_IMU = 0;
 
 // Number of Altimeter sensors
 constexpr size_t RA_NUM_ALTIMETER = 1;
@@ -29,7 +29,7 @@ constexpr bool RA_USB_DEBUG_ENABLED = true;
 constexpr bool RA_RETAIN_DEPLOYMENT_ENABLED = false;
 
 // Auto-Zero Altitude
-constexpr bool RA_AUTO_ZERO_ALT_ENABLED = true;
+constexpr bool RA_AUTO_ZERO_ALT_ENABLED = false;
 
 /* THREAD LOOP INTERVALS */
 
@@ -46,16 +46,16 @@ constexpr uint32_t RA_INTERVAL_ALTIMETER_READING = 100ul;  // ms
 constexpr uint32_t RA_INTERVAL_GNSS_READING = 200ul;  // ms
 
 // GNSS Reading
-constexpr uint32_t RA_INTERVAL_SENSORS_READING = 200ul;  // ms
+constexpr uint32_t RA_INTERVAL_SENSORS_READING = 500ul;  // ms
 
 // FSM Evaluation
-constexpr uint32_t RA_INTERVAL_FSM_EVAL = 5ul;  // ms
+constexpr uint32_t RA_INTERVAL_FSM_EVAL = 10ul;  // ms
 
 // FSM Evaluation interval maximum jitter tolerance
 constexpr uint32_t RA_JITTER_TOLERANCE_FSM_EVAL = 1ul;  // ms
 
 // Data Construct
-constexpr uint32_t RA_INTERVAL_CONSTRUCT = 50ul;  // ms
+constexpr uint32_t RA_INTERVAL_CONSTRUCT = 100ul;  // ms
 
 // Altitude Auto-Zero
 constexpr uint32_t RA_INTERVAL_AUTOZERO = 50ul;  // ms
@@ -89,13 +89,17 @@ constexpr uint32_t RA_TIME_TO_BURNOUT_MIN = 0.4 * 1000ul;  // ms
 constexpr uint32_t RA_TIME_TO_BURNOUT_MAX = 0.7 * 1000ul;  // ms
 
 // Safeguard minimum time to apogee - drogue deployment
-constexpr uint32_t RA_TIME_TO_APOGEE_MIN = 6 * 1000ul;  // ms
+constexpr uint32_t RA_TIME_TO_APOGEE_MIN = 35 * 60 * 1000ul;  // ms
 
 // Safeguard maximum time to apogee - drogue deployment
-constexpr uint32_t RA_TIME_TO_APOGEE_MAX = 10 * 1000ul;  // ms
+constexpr uint32_t RA_TIME_TO_APOGEE_MAX = 44 * 60 * 1000ul;  // ms
 
 // Launch acceleration: acc. threshold (GT)
 constexpr double RA_LAUNCH_ACC = 10.0;  // 9.81 m/s^2 (g)
+constexpr double RA_LAUNCH_ALT = 20.0;  // m
+
+// Launch acceleration: acc. threshold (GT)
+constexpr double RA_LAUNCH_VEL = 10.0;  // 9.81 m/s^2 (g)
 
 // Launch acceleration detection period
 constexpr uint32_t RA_LAUNCH_TON     = 200ul;  // ms
@@ -122,7 +126,7 @@ constexpr uint32_t RA_APOGEE_SAMPLES = RA_APOGEE_TON / RA_INTERVAL_FSM_EVAL;
 constexpr double RA_DROGUE_VEL = 17.5;  // m/s
 
 // Main Deployment Event Altitude: altitude threshold (LT)
-constexpr double RA_MAIN_ALT_RAW = 150.0;  // m
+constexpr double RA_MAIN_ALT_RAW = 2.5;  // m
 
 // Safeguard overspeed threshold to main deployment
 constexpr double RA_MAIN_OVERSPEED_VEL = RA_DROGUE_VEL * 1.5;
