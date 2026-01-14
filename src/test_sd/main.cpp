@@ -6,8 +6,8 @@
 #include "UserConfig.h"
 
 #if __has_include("STM32FreeRTOS.h")
-  #define USE_FREERTOS 1
-  #include "hal_rtos.h"
+#  define USE_FREERTOS 1
+#  include "hal_rtos.h"
 #endif
 
 /* =========================================================
@@ -17,9 +17,9 @@
 uint32_t packet_count = 0;
 
 /* IMU */
-float acc = 0.12;
+float acc   = 0.12;
 float acc_x = 0.01, acc_y = 0.02, acc_z = 0.03;
-float gyr_x = 1.1,  gyr_y = 2.2,  gyr_z = 3.3;
+float gyr_x = 1.1, gyr_y = 2.2, gyr_z = 3.3;
 float mag_x = 10.1, mag_y = 11.2, mag_z = 12.3;
 
 /* GPS */
@@ -46,20 +46,19 @@ String shared_log_buf;
 /* RTOS */
 hal::rtos::mutex_t mtx_log;
 
+String local;
+
 /* =========================================================
    TASK: CONSTRUCT LOG STRING
    ========================================================= */
 void Task_ConstructString(void *) {
 
   hal::rtos::interval_loop(100, [&]() {
-
-    String local;
-
     local.reserve(256);
 
     local += "MFC,";
     local += String(packet_count++) + ",";
-    local += String(1700000000UL) + ",";   // fake epoch
+    local += String(1700000000UL) + ",";  // fake epoch
     local += String(millis()) + ",";
     local += "F,";
 
@@ -99,9 +98,9 @@ void Task_ConstructString(void *) {
 
     /* Copy into shared buffer (SHORT mutex) */
     mtx_log.exec([&]() {
-      shared_log_buf = local;
+      fs_sd.file() << local;
+      fs_sd.file().flush();
     });
-
     Serial.println("Log created");
   });
 }
@@ -111,18 +110,14 @@ void Task_ConstructString(void *) {
    ========================================================= */
 void Task_SDSave(void *) {
 
-  String local_copy;
+  String local_copy = local;
 
   hal::rtos::interval_loop(1000, [&]() {
-
     /* Copy data only */
-    mtx_log.exec([&]() {
-      local_copy = shared_log_buf;
-    });
+
 
     /* SD write OUTSIDE mutex */
-    fs_sd.file() << local_copy;
-    fs_sd.file().flush();
+
 
     Serial.println("Logged");
   });
@@ -142,8 +137,7 @@ void setup() {
     USER_GPIO_SDIO_DAT0,
     USER_GPIO_SDIO_DAT1,
     USER_GPIO_SDIO_DAT2,
-    USER_GPIO_SDIO_DAT3
-  );
+    USER_GPIO_SDIO_DAT3);
   SD.setCMD(USER_GPIO_SDIO_CMD);
   SD.setCK(USER_GPIO_SDIO_CK);
 
@@ -162,29 +156,23 @@ void setup() {
   }
 
   /* CSV Header */
-  fs_sd.file() <<
-    "ID,COUNT,EPOCH,MILLIS,MODE,"
-    "AX,AY,AZ,ACC,ACC_KF,"
-    "GX,GY,GZ,"
-    "MX,MY,MZ,"
-    "UTC,GPS_ALT,LAT,LON,SIV,"
-    "VEL,POS,ALT,TEMP,PRESS,AGL,ALT_REF,APOGEE\r\n";
+  fs_sd.file() << "ID,COUNT,EPOCH,MILLIS,MODE,"
+                  "AX,AY,AZ,ACC,ACC_KF,"
+                  "GX,GY,GZ,"
+                  "MX,MY,MZ,"
+                  "UTC,GPS_ALT,LAT,LON,SIV,"
+                  "VEL,POS,ALT,TEMP,PRESS,AGL,ALT_REF,APOGEE\r\n";
 
   fs_sd.file().flush();
 
   /* RTOS */
   hal::rtos::scheduler.initialize();
-
   hal::rtos::scheduler.create(
     Task_ConstructString,
-    { .name = "Construct", .stack_size = 8192, .priority = osPriorityHigh }
-  );
-
+    {.name = "Construct", .stack_size = 8192, .priority = osPriorityHigh});
   hal::rtos::scheduler.create(
     Task_SDSave,
-    { .name = "SDSave", .stack_size = 8192, .priority = osPriorityNormal }
-  );
-
+    {.name = "SDSave", .stack_size = 8192, .priority = osPriorityNormal});
   hal::rtos::scheduler.start();
 }
 
@@ -192,5 +180,6 @@ void setup() {
    LOOP (NOT USED)
    ========================================================= */
 void loop() {
-  delay(1);
+  // fs_sd.file() << "Hello";
+  // fs_sd.file().flush();
 }

@@ -53,6 +53,24 @@ SensorAltimeter *altimeter[RA_NUM_ALTIMETER] = {
   new Altimeter_BMP581(USER_GPIO_BMP581_NSS),  // Altimeter #1
 };
 
+struct SERVO {
+  uint32_t pin;
+  SERVO(uint32_t pin) : pin(pin) {
+    pinMode(pin, OUTPUT);
+  }
+
+  void write(int angle) {
+    const int cpw = map(angle, 0, 180, 500, 2500);
+    for (size_t i = 0; i < max(5, 20); ++i) {
+      digitalWrite(pin, HIGH);
+      delayMicroseconds(cpw);
+      digitalWrite(pin, LOW);
+      delayMicroseconds(20000);
+    }
+  }
+};
+SERVO servo_a(USER_GPIO_SERVO_A);
+
 /* END SENSOR INSTANCES */
 
 /* BEGIN SENSOR STATUSES */
@@ -99,6 +117,7 @@ struct DataMemory {
   float mag_z;
   float heading;
 
+  bool   deploy;
   String cmd_echo;
 
 } data;
@@ -178,6 +197,8 @@ void UserSetupGPIO() {
 
 void UserSetupActuator() {
   servos.attach(USER_GPIO_SERVO_B, RA_SERVO_MIN, RA_SERVO_MAX, RA_SERVO_MAX);
+  servos[0].write(0);
+  servos[0].write(180);
 }
 
 void UserSetupCDC() {
@@ -195,9 +216,6 @@ void UserSetupSPI() {
 
 void UserSetupUSART() {
   Xbee.begin(115200);
-  if (Xbee.available()) {
-    Serial.println("Xbee Success");
-  }
 }
 
 void UserSetupI2C() {
@@ -236,7 +254,6 @@ void UserSetupSensor() {
     Serial.println("TOF Success");
   }
 }
-
 /* END USER SETUP */
 
 /* BEGIN USER THREADS */
@@ -261,18 +278,33 @@ void CB_ReadIMU(void *) {
 
 void CB_ReadAltimeter(void *) {
   hal::rtos::interval_loop(RA_INTERVAL_ALTIMETER_READING, [&]() -> void {
+    const double qnh_hpa = 1013.25;
     mtx_spi.exec(ReadAltimeter);
 
     // Update KF with measurement
     filter_alt.kf.update({data.altimeter[0].altitude_m});
 
     // Update altitude above ground
-    alt_agl = data.altimeter[0].altitude_m - alt_ref;
+    if (simEnabled && simActivated)
+      alt_agl = altitude_msl_from_pressure(simPressure, qnh_hpa);
+    else
+      alt_agl = data.altimeter[0].altitude_m - alt_ref;
 
     // Update apogee
     if (alt_agl > apogee_raw)
       apogee_raw = alt_agl;
     // Serial.println("CB_ReadAltimeter");
+  });
+}
+
+void CB_ReadI2C(void *) {
+  hal::rtos::interval_loop(500ul, [&]() -> void {
+    mtx_i2c.exec([&]() -> void {
+      ReadGNSS();
+      ReadINA();
+      ReadMAG();
+      ReadTOF();
+    });
   });
 }
 
@@ -340,38 +372,48 @@ void CB_ConstructData(void *) {
   hal::rtos::interval_loop(RA_INTERVAL_CONSTRUCT, [&]() -> void {
     sd_buf = "";
     csv_stream_lf(sd_buf)
-      << "MFC"
+      << "DDL"
       << packet_count
       << data.timestamp_epoch
       << millis()
       << state_string(fsm.state())
 
-      << data.imu[0].acc_x
-      << data.imu[0].acc_y
-      << data.imu[0].acc_z
-      << acc
-      << filter_acc.kf.state()  // ACC
+      << 1043          // TEAM_ID
+      << data.utc      // MISSION_TIME
+      << packet_count  // PACKET_COUNT
+      << data.mode     // MODE
 
-      << data.imu[0].gyr_x  // GYRO_R
-      << data.imu[0].gyr_y  // GYRO_P
-      << data.imu[0].gyr_z  // GYRO_Y
+      // 5–6
+      << state_string(fsm.state())                // STATE
+      << String(data.altimeter[0].altitude_m, 1)  // ALTITUDE (m, 0.1)
+
+      // 7–11
+      << data.altimeter[0].temperature   // TEMPERATURE (°C, 0.1)
+      << data.altimeter[0].pressure_hpa  // PRESSURE (kPa, 0.1)
+      << data.batt_volt                  // VOLTAGE (V, 0.1)
+      << data.batt_curr                  // CURRENT (A, 0.01)
+
+      << 0.f << 0.f << 0.f
+      << 0.f << 0.f << 0.f
+
+      // 18–22 GPS
+      << data.utc                   // GPS_TIME
+      << data.altitude_msl          // GPS_ALTITUDE (m, 0.1)
+      << String(data.latitude, 4)   // GPS_LATITUDE
+      << String(data.longitude, 4)  // GPS_LONGITUDE
+      << data.siv                   // GPS_SATS
+
+      << data.cmd_echo  // CMD_ECHO
+
+      << data.heading
 
       << data.mag_x
       << data.mag_y
       << data.mag_z
 
-      << data.utc                      // GPS_TIME
-      << String(data.altitude_msl, 1)  // GPS_ALTITUDE (m, 0.1)
-      << String(data.latitude, 4)      // GPS_LATITUDE
-      << String(data.longitude, 4)     // GPS_LONGITUDE
-      << data.siv                      // GPS_SATS
-
-      << filter_alt.kf.state_vector()[1]  // VEL
-      << filter_alt.kf.state_vector()[0]  // POS
       << data.tof
-      << data.altimeter[0].altitude_m
-      << data.altimeter[0].temperature
-      << data.altimeter[0].pressure_hpa
+      << data.deploy
+
       << alt_agl
       << alt_ref
       << apogee_raw
@@ -424,41 +466,56 @@ void CB_ConstructData(void *) {
 }
 
 void CB_SDLogger(void *) {
-  hal::rtos::interval_loop(1000ul, [&]() -> void {  //LoggerInterval(), LoggerInterval, [&]() -> void {
+  hal::rtos::interval_loop(200ul, [&]() -> void {  //LoggerInterval(), LoggerInterval, [&]() -> void {
     mtx_sdio.exec([&]() -> void {
       fs_sd.file() << sd_buf;
+      fs_sd.file().flush();
       Serial.println("logged");
-      // Serial.println("CB_SDLogger");
     });
   });
 }
 
-void CB_SDSaveandTransmit(void *) {
+void CB_SDSave(void *) {
   hal::rtos::interval_loop(1000ul, [&]() -> void {
     mtx_sdio.exec([&]() -> void {
-      fs_sd.file() << sd_buf;
-      fs_sd.file().flush();
-      Xbee.println(tx_buf);
-      packet_count++;
-      Serial.println("SDSave");
+      Serial.println("FLUSH");
     });
   });
 }
 
 void CB_Transmit(void *) {
   hal::rtos::interval_loop(1000ul, [&]() -> void {
+    if (telemetry_enabled) {
+      mtx_uart.exec([&]() -> void {
+        Xbee.println(tx_buf);
+        packet_count++;
+      });
+    }
+  });
+}
+
+void CB_RxCommand(void *) {
+  hal::rtos::interval_loop(10ul, [&]() -> void {
     mtx_uart.exec([&]() -> void {
-      Xbee.println(tx_buf);
-      packet_count++;
+      while (Xbee.available()) {
+        char c = Xbee.read();
+
+        if (c == '\n') {
+          rx_message.trim();
+          HandleCommand(rx_message);
+          rx_message = "";
+        } else {
+          rx_message += c;
+        }
+      }
     });
   });
 }
 
 void CB_DebugLogger(void *) {
-  hal::rtos::interval_loop(1000ul, [&]() -> void {
+  hal::rtos::interval_loop(500ul, [&]() -> void {
     mtx_cdc.exec([&]() -> void {
-      Serial.println(sd_buf);
-      // Serial.println("CB_DebugLogger");
+      Serial.println(tx_buf);
     });
   });
 }
@@ -470,17 +527,18 @@ void CB_RetainDeployment(void *) {
 }
 
 void CB_NeoPixelBlink(void *) {
-  static bool on = false;
+  static xcore::FfTimer led_ff(950, 50, millis);
 
-  hal::rtos::interval_loop(1000ul, [&]() -> void {
-    if (on) {
-      led.setPixelColor(0, led.Color(255, 0, 0));  // GREEN
-      led.setPixelColor(1, led.Color(255, 0, 0));
-    } else {
-      led.clear();
-    }
-    led.show();
-    on = !on;
+  hal::rtos::interval_loop(1ul, [&]() -> void {
+    led_ff.on_rising([]() -> void {
+            led.setPixelColor(0, led.Color(255, 0, 0));
+            led.setPixelColor(1, led.Color(255, 0, 0));
+            led.show();
+          })
+      .on_falling([]() -> void {
+        led.clear();
+        led.show();
+      });
   });
 }
 
@@ -491,24 +549,26 @@ void UserThreads() {
 
   // hal::rtos::scheduler.create(CB_ReadIMU, {.name = "CB_ReadIMU", .stack_size = 8192, .priority = osPriorityHigh});
   hal::rtos::scheduler.create(CB_ReadAltimeter, {.name = "CB_ReadAltimeter", .stack_size = 8192, .priority = osPriorityHigh});
-  hal::rtos::scheduler.create(CB_ReadGNSS, {.name = "CB_ReadGNSS", .stack_size = 4096, .priority = osPriorityHigh});
+  // hal::rtos::scheduler.create(CB_ReadGNSS, {.name = "CB_ReadGNSS", .stack_size = 4096, .priority = osPriorityHigh});
 
-  hal::rtos::scheduler.create(CB_ReadINA, {.name = "CB_ReadINA", .stack_size = 4096, .priority = osPriorityHigh});
-  hal::rtos::scheduler.create(CB_ReadMAG, {.name = "CB_ReadMAG", .stack_size = 4096, .priority = osPriorityHigh});
-  hal::rtos::scheduler.create(CB_ReadTOF, {.name = "CB_ReadTOF", .stack_size = 4096, .priority = osPriorityAboveNormal});
+  hal::rtos::scheduler.create(CB_ReadI2C, {.name = "CB_ReadI2C", .stack_size = 8192, .priority = osPriorityHigh});
+  // hal::rtos::scheduler.create(CB_ReadINA, {.name = "CB_ReadINA", .stack_size = 4096, .priority = osPriorityHigh});
+  // hal::rtos::scheduler.create(CB_ReadMAG, {.name = "CB_ReadMAG", .stack_size = 4096, .priority = osPriorityHigh});
+  // hal::rtos::scheduler.create(CB_ReadTOF, {.name = "CB_ReadTOF", .stack_size = 4096, .priority = osPriorityHigh});
 
   // if constexpr (RA_RETAIN_DEPLOYMENT_ENABLED)
-  // hal::rtos::scheduler.create(CB_RetainDeployment, {.name = "CB_RetainDeployment", .stack_size = 4096, .priority = osPriorityHigh});
+  //   hal::rtos::scheduler.create(CB_RetainDeployment, {.name = "CB_RetainDeployment", .stack_size = 4096, .priority = osPriorityHigh});
 
   // if constexpr (RA_AUTO_ZERO_ALT_ENABLED)
   //   hal::rtos::scheduler.create(CB_AutoZeroAlt, {.name = "CB_AutoZeroAlt", .stack_size = 4096, .priority = osPriorityHigh});
 
   hal::rtos::scheduler.create(CB_ConstructData, {.name = "CB_ConstructData", .stack_size = 4096, .priority = osPriorityBelowNormal});
 
-  // hal::rtos::scheduler.create(CB_SDLogger, {.name = "CB_SDLogger", .stack_size = 8192, .priority = osPriorityNormal});
-  hal::rtos::scheduler.create(CB_SDSaveandTransmit, {.name = "CB_SDSaveandTransmit", .stack_size = 8192, .priority = osPriorityNormal});
+  // hal::rtos::scheduler.create(CB_SDLogger, {.name = "CB_SDLogger", .stack_size = 16384, .priority = osPriorityNormal});
+  // hal::rtos::scheduler.create(CB_SDSave, {.name = "CB_SDSave", .stack_size = 8192, .priority = osPriorityNormal});
 
-  // hal::rtos::scheduler.create(CB_Transmit, {.name = "CB_Transmit", .stack_size = 8192, .priority = osPriorityNormal});
+  hal::rtos::scheduler.create(CB_Transmit, {.name = "CB_Transmit", .stack_size = 8192, .priority = osPriorityNormal});
+  hal::rtos::scheduler.create(CB_RxCommand, {.name = "CB_RxCommand", .stack_size = 8192, .priority = osPriorityNormal});
 
   hal::rtos::scheduler.create(CB_NeoPixelBlink, {.name = "CB_NeoPixelBlink", .stack_size = 1028, .priority = osPriorityBelowNormal});
 
@@ -525,13 +585,20 @@ void setup() {
   fs_sd.find_file_name(RA_FILE_NAME, RA_FILE_EXT);
   fs_sd.open_one<FsMode::WRITE>();
   sd_buf.reserve(1024);
+  /* CSV Header */
+  fs_sd.file() << "ID,COUNT,EPOCH,MILLIS,MODE,"
+                  "AX,AY,AZ,ACC,ACC_KF,"
+                  "GX,GY,GZ,"
+                  "MX,MY,MZ,"
+                  "UTC,GPS_ALT,LAT,LON,SIV,"
+                  "VEL,POS,ALT,TEMP,PRESS,AGL,ALT_REF,APOGEE\r\n";
+  fs_sd.file().flush();
   /* END STORAGES SETUP */
 
   /* BEGIN GPIO AND INTERFACES SETUP */
   UserSetupGPIO();
-  UserSetupActuator();
+  // UserSetupActuator();
   UserSetupCDC();
-  delay(2000);
   UserSetupUSART();
   UserSetupI2C();
   UserSetupSPI();
@@ -556,11 +623,12 @@ void setup() {
   /* END SENSORS SETUP */
 
   //ZeroALT
+  delay(4000);
   ReadAltimeter();
   alt_ref = data.altimeter[0].altitude_m;
+  Serial.println(alt_ref);
 
-  //Debug
-  Serial.println("sensor setuped");
+
   Serial.println(status);
   if (!fs_sd.file()) {
     Serial.println("SD FILE OPEN FAILED");
@@ -577,10 +645,10 @@ void setup() {
 }
 
 void EvalFSM() {
-  static uint32_t                                            state_millis_start   = 0;
-  static uint32_t                                            state_millis_elapsed = 0;
-  static xcore::sampler_t<2048, double>                      sampler;
-  static xcore::sampler_t<RA_MAIN_OVERSPEED_SAMPLES, double> sampler_overspeed;
+  static uint32_t                       state_millis_start   = 0;
+  static uint32_t                       state_millis_elapsed = 0;
+  static xcore::sampler_t<2048, double> sampler;
+  static xcore::sampler_t<2048, double> sampler_ins;
 
   switch (fsm.state()) {
     case UserState::STARTUP: {
@@ -666,7 +734,7 @@ void EvalFSM() {
       state_millis_elapsed = millis() - state_millis_start;
 
       if (state_millis_elapsed >= RA_TIME_TO_APOGEE_MAX)
-        fsm.transfer(UserState::DROGUE_DEPLOY);
+        fsm.transfer(UserState::APOGEE);
       //     (state_millis_elapsed >= RA_TIME_TO_APOGEE_MIN &&
       //      sampler.is_sampled() &&
       //      sampler.under_by_over<double>() > RA_TRUE_TO_FALSE_RATIO))
@@ -674,14 +742,19 @@ void EvalFSM() {
       break;
     }
 
-    case UserState::DROGUE_DEPLOY: {
+    case UserState::APOGEE: {
       // <--- Next: activate pyro/servo and always transfer --->
-      // ActivateDeployment(/*index*/ 0);
-      fsm.transfer(UserState::DROGUE_DESCEND);
+      fsm.transfer(UserState::DESCENT);
       break;
     }
 
-    case UserState::DROGUE_DESCEND: {
+    case UserState::DESCENT: {
+      // <--- Next: activate pyro/servo and always transfer --->
+      fsm.transfer(UserState::PROBE_REALEASE);
+      break;
+    }
+
+    case UserState::PROBE_REALEASE: {
       // !!!! Next: DETECT main deployment altitude !!!!
       if (fsm.on_enter()) {  // Run once
         sampler.reset();
@@ -704,31 +777,32 @@ void EvalFSM() {
       // const bool cond_overspeed = sampler_overspeed.is_sampled() &&
       //                             sampler_overspeed.over_by_under<double>() > RA_TRUE_TO_FALSE_RATIO;
 
-      if (cond_alt_lower)
-        // || (cond_min_time && cond_overspeed))
-        fsm.transfer(UserState::MAIN_DEPLOY);
-
+      if (cond_alt_lower) {
+        ActivateDeployment(0);
+        fsm.transfer(UserState::PAYLOAD_REALEASE);
+      }
       break;
     }
 
-    case UserState::MAIN_DEPLOY: {
-      // <--- Next: activate pyro/servo and always transfer --->
-      ActivateDeployment(/*index*/ 0);
-      fsm.transfer(UserState::MAIN_DESCEND);
-      break;
-    }
-
-
-    case UserState::MAIN_DESCEND: {
+    case UserState::PAYLOAD_REALEASE: {
       // !!!! Next: DETECT landing !!!!
       if (fsm.on_enter()) {  // Run once
         sampler.reset();
         sampler.set_capacity(RA_LANDED_SAMPLES, /*recount*/ false);
         sampler.set_threshold(RA_LANDED_VEL, /*recount*/ false);
+
+        sampler_ins.reset();
+        sampler_ins.set_capacity(RA_INS_SAMPLES, /*recount*/ false);
+        sampler_ins.set_threshold(RA_LANDED_VEL, /*recount*/ false);
       }
 
       const double vel = filter_alt.kf.state_vector()[1];
       sampler.add_sample(std::abs(vel));
+      sampler_ins.add_sample(alt_agl);
+
+      if (sampler_ins.is_sampled() &&
+          sampler_ins.under_by_over<double>() > RA_TRUE_TO_FALSE_RATIO)
+        ActivateDeployment(1);
 
       if (sampler.is_sampled() &&
           sampler.under_by_over<double>() > RA_TRUE_TO_FALSE_RATIO)
@@ -818,14 +892,14 @@ void ReadTOF() {
   data.tof = tof.getDistance();  //Get the result of the measurement from the sensor
   tof.clearInterrupt();
   tof.stopRanging();
+  Serial.println(data.tof);
 }
-
 
 void ActivateDeployment(const size_t index) {
   switch (index) {
     case 0: {  // Drogue/First Deployment
       pos_a = RA_SERVO_A_RELEASE;
-      servos[0].write(pos_a);
+      servo_a.write(pos_a);
       break;
     }
 
@@ -860,5 +934,92 @@ void AutoZeroAlt() {
     }
     default:
       break;
+  }
+}
+
+void HandleCommand(const String &rx) {
+  // CMD header check
+  if (rx.substring(0, 9) != "CMD,1043,") {
+    Serial.println("NACK");
+    return;
+  }
+
+  String cmd = rx.substring(9);
+  cmd.trim();
+
+  data.cmd_echo = cmd;
+
+  /* ===== COMMANDS ===== */
+
+  /* ========== CX ========== */
+  if (cmd == "CX,ON") {
+    telemetry_enabled = true;
+  } else if (cmd == "CX,OFF") {
+    telemetry_enabled = false;
+  }
+
+  /* ========== ST ========== */
+  // else if (cmd.substring(0, 3) == "ST,") {
+  //   String arg = cmd.substring(3);
+  //   arg.trim();
+
+  //   if (arg == "GPS")
+  //     missionTime = "GPS_TIME";  // hook GPS later
+  //   else
+  //     missionTime = arg;
+  // }
+
+  /* ========== SIM ========== */
+  else if (cmd == "SIM,ENABLE") {
+    simEnabled = true;
+  } else if (cmd == "SIM,ACTIVATE") {
+    if (simEnabled) {
+      simActivated = true;
+      data.mode    = "S";
+    }
+  } else if (cmd == "SIM,DISABLE") {
+    simEnabled   = false;
+    simActivated = false;
+    data.mode    = "F";
+  }
+
+  /* ========== SIMP ========== */
+  else if (cmd.substring(0, 5) == "SIMP,") {
+    if (simEnabled && simActivated) {
+      simPressure = cmd.substring(5).toInt();
+    }
+  }
+
+  /* ========== CAL ========== */
+  else if (cmd == "CAL") {
+    Serial.println("Altitude calibrated to 0 m");
+  }
+
+  /* ========== MEC ========== */
+  else if (cmd == "MEC,PL,ON") {
+    Serial.println("Payload Release ON");
+  } else if (cmd == "MEC,PL,OFF") {
+    Serial.println("Payload Release OFF");
+  } else if (cmd == "MEC,INS,ON") {
+    Serial.println("Instrument Deploy ON");
+  } else if (cmd == "MEC,INS,OFF") {
+    Serial.println("Instrument Deploy OFF");
+  } else if (cmd == "MEC,PAR,ON") {
+    Serial.println("Paraglider Rotation ON");
+  } else if (cmd == "MEC,PAR,OFF") {
+    Serial.println("Paraglider Rotation OFF");
+  }
+
+  /* ========== RESET ========== */
+  else if (cmd == "RESET") {
+    __NVIC_SystemReset();
+  }
+
+  /* ========== UNKNOWN ========== */
+  else {
+    Serial.print("Unknown CMD: ");
+    Serial.println(cmd);
+    ++last_nack;
+    --last_ack;
   }
 }

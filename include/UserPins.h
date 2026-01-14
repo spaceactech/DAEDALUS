@@ -6,8 +6,8 @@
 constexpr uint32_t USER_GPIO_LED     = PC14;
 constexpr uint32_t USER_GPIO_BUZZER  = PB0;
 
-constexpr uint32_t USER_GPIO_SERVO_A = PH1;
-constexpr uint32_t USER_GPIO_SERVO_B = PA2;
+constexpr uint32_t USER_GPIO_SERVO_A = PA2;
+constexpr uint32_t USER_GPIO_SERVO_B = PA8;
 
 constexpr uint32_t USER_GPIO_SPI1_SCK  = PA5;
 constexpr uint32_t USER_GPIO_SPI1_MISO = PA6;

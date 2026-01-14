@@ -1,89 +1,49 @@
-/* ===== Includes ===== */
-#include <Arduino.h>
+#include <Wire.h>
+#include "SparkFun_VL53L1X.h" //Click here to get the library: http://librarymanager/All#SparkFun_VL53L1X
+#include "UserPins.h"     // User's Pins Mapping
 
-#if __has_include("STM32FreeRTOS.h")
-#  include "hal_rtos.h"
-#endif
+//Optional interrupt and shutdown pins.
 
-#include <SPI.h>
-#include <ISM6HG256XSensor.h>
-#include "UserPins.h"  // User's Pins Mapping
+TwoWire  i2c1(USER_GPIO_I2C1_SDA, USER_GPIO_I2C1_SCL);
+SFEVL53L1X distanceSensor;
+//Uncomment the following line to use the optional shutdown and interrupt pins.
+//SFEVL53L1X distanceSensor(Wire, SHUTDOWN_PIN, INTERRUPT_PIN);
 
-/* ===== Pins ===== */
+void setup(void)
+{
+  i2c1.begin();
 
-
-/* ===== SPI + Sensor ===== */
-SPIClass         spi1(USER_GPIO_SPI1_MOSI, USER_GPIO_SPI1_MISO, USER_GPIO_SPI1_SCK);
-ISM6HG256XSensor imu(&spi1, USER_GPIO_ISM256_NSS, 200'000);
-
-/* ===== Data ===== */
-ISM6HG256X_Axes_t imu_accel;
-ISM6HG256X_Axes_t imu_gyro;
-
-/* ===== RTOS Task to Read IMU ===== */
-void CB_ReadIMU(void *) {
-  hal::rtos::interval_loop(100ul, [&]() -> void {
-    imu.Get_X_Axes(&imu_accel);
-    imu.Get_G_Axes(&imu_gyro);
-  });
-}
-
-/* ===== RTOS Task to Print IMU ===== */
-void CB_PrintIMU(void *) {
-  hal::rtos::interval_loop(200ul, [&]() -> void {
-    Serial.print("ACC (mg): ");
-    Serial.print(imu_accel.x);
-    Serial.print(", ");
-    Serial.print(imu_accel.y);
-    Serial.print(", ");
-    Serial.println(imu_accel.z);
-
-    Serial.print("GYR (mdps): ");
-    Serial.print(imu_gyro.x);
-    Serial.print(", ");
-    Serial.print(imu_gyro.y);
-    Serial.print(", ");
-    Serial.println(imu_gyro.z);
-    Serial.println();
-  });
-}
-
-/* ===== Register RTOS Threads ===== */
-void UserThreads() {
-  hal::rtos::scheduler.create(
-    CB_ReadIMU,
-    {.name = "ReadIMU", .stack_size = 4096, .priority = osPriorityHigh});
-
-  hal::rtos::scheduler.create(
-    CB_PrintIMU,
-    {.name = "PrintIMU", .stack_size = 4096, .priority = osPriorityBelowNormal});
-}
-
-void setup() {
   Serial.begin(115200);
-  delay(2000);
+  Serial.println("VL53L1X Qwiic Test");
 
-  spi1.begin();
-
-  pinMode(USER_GPIO_BMP581_NSS, OUTPUT);
-  digitalWrite(USER_GPIO_BMP581_NSS, 1);
-  if (!imu.begin()) {
-    Serial.println("ISM6HG256X init FAILED");
-    while (1);
+  if (distanceSensor.begin() != 0) //Begin returns 0 on a good init
+  {
+    Serial.println("Sensor failed to begin. Please check wiring. Freezing...");
+    while (1)
+      ;
   }
-  Serial.println("ISM6HG256X init OK");
-  digitalWrite(USER_GPIO_BMP581_NSS, 0);
-
-  
-
-  imu.Enable_X();  // enable accelerometer
-  imu.Enable_G();  // enable gyroscope
-
-  hal::rtos::scheduler.initialize();
-  UserThreads();
-  hal::rtos::scheduler.start();
+  Serial.println("Sensor online!");
 }
 
-void loop() {
-  // not used when RTOS is running
+void loop(void)
+{
+  distanceSensor.startRanging(); //Write configuration bytes to initiate measurement
+  while (!distanceSensor.checkForDataReady())
+  {
+    delay(1);
+  }
+  int distance = distanceSensor.getDistance(); //Get the result of the measurement from the sensor
+  distanceSensor.clearInterrupt();
+  distanceSensor.stopRanging();
+
+  Serial.print("Distance(mm): ");
+  Serial.print(distance);
+
+  float distanceInches = distance * 0.0393701;
+  float distanceFeet = distanceInches / 12.0;
+
+  Serial.print("\tDistance(ft): ");
+  Serial.print(distanceFeet, 2);
+
+  Serial.println();
 }

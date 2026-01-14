@@ -12,13 +12,18 @@ enum class UserState : uint8_t {
   IDLE_SAFE,
   LAUNCH_PAD,
   ASCENT,
+  APOGEE,
+  DESCENT,
+  PROBE_REALEASE,
+  PAYLOAD_REALEASE,
+  LANDED,
+
   POWERED,
   COASTING,
   DROGUE_DEPLOY,
   DROGUE_DESCEND,
   MAIN_DEPLOY,
   MAIN_DESCEND,
-  LANDED,
   RECOVERED_SAFE
 };
 
@@ -30,6 +35,19 @@ inline const char *state_string(const UserState state) {
       return "IDLE_SAFE";
     case UserState::LAUNCH_PAD:
       return "LAUNCH_PAD";
+    case UserState::ASCENT:
+      return "ASCENT";
+    case UserState::APOGEE:
+      return "APOGEE";
+    case UserState::DESCENT:
+      return "DESCENT";
+    case UserState::PROBE_REALEASE:
+      return "PROBE_REALEASE";
+    case UserState::PAYLOAD_REALEASE:
+      return "PAYLOAD_REALEASE";
+    case UserState::LANDED:
+      return "LANDED";
+      
     case UserState::POWERED:
       return "POWERED";
     case UserState::COASTING:
@@ -42,8 +60,6 @@ inline const char *state_string(const UserState state) {
       return "MAIN_DEPL";
     case UserState::MAIN_DESCEND:
       return "MAIN_DESC";
-    case UserState::LANDED:
-      return "LANDED";
     case UserState::RECOVERED_SAFE:
       return "REC_SAFE";
     default:

@@ -34,7 +34,7 @@ constexpr bool RA_AUTO_ZERO_ALT_ENABLED = false;
 /* THREAD LOOP INTERVALS */
 
 // u-blox GPS comm timeout
-constexpr uint32_t UBLOX_CUSTOM_MAX_WAIT = 250ul;  
+constexpr uint32_t UBLOX_CUSTOM_MAX_WAIT = 250ul;
 
 // IMU Reading
 constexpr uint32_t RA_INTERVAL_IMU_READING = 5ul;  // ms
@@ -96,14 +96,14 @@ constexpr uint32_t RA_TIME_TO_APOGEE_MAX = 44 * 60 * 1000ul;  // ms
 
 // Launch acceleration: acc. threshold (GT)
 constexpr double RA_LAUNCH_ACC = 10.0;  // 9.81 m/s^2 (g)
-constexpr double RA_LAUNCH_ALT = 20.0;  // m
+constexpr double RA_LAUNCH_ALT = 50.0;   // m
 
 // Launch acceleration: acc. threshold (GT)
 constexpr double RA_LAUNCH_VEL = 10.0;  // 9.81 m/s^2 (g)
 
 // Launch acceleration detection period
 constexpr uint32_t RA_LAUNCH_TON     = 200ul;  // ms
-constexpr uint32_t RA_LAUNCH_SAMPLES = RA_LAUNCH_TON / RA_INTERVAL_FSM_EVAL;
+constexpr uint32_t RA_LAUNCH_SAMPLES = 1200;   // RA_LAUNCH_TON / RA_INTERVAL_FSM_EVAL;
 
 // Motor burnout detection: acc. threshold (LT)
 constexpr double RA_BURNOUT_ACC = 0.60 * RA_LAUNCH_ACC;  // 9.81 m/s^2 (g)
@@ -127,13 +127,14 @@ constexpr double RA_DROGUE_VEL = 17.5;  // m/s
 
 // Main Deployment Event Altitude: altitude threshold (LT)
 constexpr double RA_MAIN_ALT_RAW = 2.5;  // m
+constexpr double RA_INS_ALT_RAW = 4;  // m
 
 // Safeguard overspeed threshold to main deployment
 constexpr double RA_MAIN_OVERSPEED_VEL = RA_DROGUE_VEL * 1.5;
 
 // Main Deployment Event Altitude detection period
 constexpr uint32_t RA_MAIN_OVERSPEED_TON     = 500ul;  // ms
-constexpr uint32_t RA_MAIN_OVERSPEED_SAMPLES = RA_MAIN_OVERSPEED_TON / RA_INTERVAL_FSM_EVAL;
+constexpr uint32_t RA_MAIN_OVERSPEED_SAMPLES = 1500;   //RA_MAIN_OVERSPEED_TON / RA_INTERVAL_FSM_EVAL;
 
 // Safeguard nominal time to main deployment
 constexpr uint32_t RA_TIME_TO_MAIN_NOM = static_cast<uint32_t>((RA_APOGEE_ALT - RA_MAIN_ALT_RAW) / RA_DROGUE_VEL) * 1000ul;  // ms
@@ -148,11 +149,18 @@ constexpr uint32_t RA_TIME_TO_MAIN_MAX = RA_TIME_TO_MAIN_NOM * (1.00 + 0.05);  /
 constexpr uint32_t RA_MAIN_TON     = 500ul;  // ms
 constexpr uint32_t RA_MAIN_SAMPLES = RA_MAIN_TON / RA_INTERVAL_FSM_EVAL;
 
+// Main Deployment Event Altitude detection period
+constexpr uint32_t RA_INS_TON     = 500ul;  // ms
+constexpr uint32_t RA_INS_SAMPLES = RA_MAIN_TON / RA_INTERVAL_FSM_EVAL;
+
 // Main Deployment Event Triggering Delay Compensation Multiplier
 constexpr double RA_MAIN_COMPENSATION_MULT = 2.0;
 
 // Main Deployment Event Triggering Delay Compensation Value
 constexpr double RA_MAIN_ALT_COMPENSATED = RA_MAIN_ALT_RAW + RA_MAIN_COMPENSATION_MULT * RA_DROGUE_VEL * (static_cast<double>(RA_MAIN_TON) / 1000.);  // m
+
+// INS Deployment Event Triggering Delay Compensation Value
+constexpr double RA_INS_ALT_COMPENSATED = RA_INS_ALT_RAW + RA_MAIN_COMPENSATION_MULT * RA_DROGUE_VEL * (static_cast<double>(RA_MAIN_TON) / 1000.);  // m
 
 // Velocity at Landed State: vel. threshold (LT)
 constexpr double RA_LANDED_VEL = 0.5;  // m/s
@@ -174,6 +182,8 @@ constexpr uint32_t RA_SDLOGGER_INTERVAL_IDLE     = 1000ul;  // 1 Hz
 constexpr uint32_t RA_SDLOGGER_INTERVAL_SLOW     = 200ul;   // 5 Hz
 constexpr uint32_t RA_SDLOGGER_INTERVAL_FAST     = 100ul;   // 10 Hz
 constexpr uint32_t RA_SDLOGGER_INTERVAL_REALTIME = 50ul;    // 20 Hz
+
+constexpr uint32_t DEPLOY_SHOULD_ACTIVATE = 40 * 60 * 1000ul;
 
 // Static assertions validate settings
 namespace details::assertions {
