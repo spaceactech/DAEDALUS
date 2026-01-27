@@ -16,15 +16,7 @@ enum class UserState : uint8_t {
   DESCENT,
   PROBE_REALEASE,
   PAYLOAD_REALEASE,
-  LANDED,
-
-  POWERED,
-  COASTING,
-  DROGUE_DEPLOY,
-  DROGUE_DESCEND,
-  MAIN_DEPLOY,
-  MAIN_DESCEND,
-  RECOVERED_SAFE
+  LANDED
 };
 
 inline const char *state_string(const UserState state) {
@@ -47,21 +39,6 @@ inline const char *state_string(const UserState state) {
       return "PAYLOAD_REALEASE";
     case UserState::LANDED:
       return "LANDED";
-      
-    case UserState::POWERED:
-      return "POWERED";
-    case UserState::COASTING:
-      return "COASTING";
-    case UserState::DROGUE_DEPLOY:
-      return "DROG_DEPL";
-    case UserState::DROGUE_DESCEND:
-      return "DROG_DESC";
-    case UserState::MAIN_DEPLOY:
-      return "MAIN_DEPL";
-    case UserState::MAIN_DESCEND:
-      return "MAIN_DESC";
-    case UserState::RECOVERED_SAFE:
-      return "REC_SAFE";
     default:
       __builtin_unreachable();
   }

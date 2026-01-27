@@ -99,7 +99,6 @@ void Task_ConstructString(void *) {
     /* Copy into shared buffer (SHORT mutex) */
     mtx_log.exec([&]() {
       fs_sd.file() << local;
-      fs_sd.file().flush();
     });
     Serial.println("Log created");
   });
@@ -115,8 +114,9 @@ void Task_SDSave(void *) {
   hal::rtos::interval_loop(1000, [&]() {
     /* Copy data only */
 
-
-    /* SD write OUTSIDE mutex */
+    mtx_log.exec([&]() {
+      fs_sd.file().flush();
+    });
 
 
     Serial.println("Logged");

@@ -12,7 +12,7 @@ constexpr const char *RA_FILE_EXT = "CSV";
 
 // Number of IMU sensors
 constexpr size_t RA_NUM_IMU = 0;
-
+  
 // Number of Altimeter sensors
 constexpr size_t RA_NUM_ALTIMETER = 1;
 
@@ -33,7 +33,7 @@ constexpr bool RA_AUTO_ZERO_ALT_ENABLED = false;
 
 /* THREAD LOOP INTERVALS */
 
-// u-blox GPS comm timeout
+// u-blox GPS common timeout
 constexpr uint32_t UBLOX_CUSTOM_MAX_WAIT = 250ul;
 
 // IMU Reading
