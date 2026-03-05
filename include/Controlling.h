@@ -1,13 +1,16 @@
+#ifndef CONTROLLING_H
+#define CONTROLLING_H
+
 #include <Arduino.h>
 #include <cmath>
+#include <lib_xcore>
+#include <xcore/math_module>
 
 // --- XCORE Vector Alias ---
 template<size_t Size>
-using numeric_vector =
-  LIB_XCORE_NAMESPACE::impl::numeric_vector_static_t<real_t, Size>;
+using numeric_vector = xcore::impl::numeric_vector_static_t<double, Size>;
 
 // --- Structs ---
-
 struct GPSCoordinate {
   double lat;
   double lon;
@@ -86,8 +89,9 @@ numeric_vector<3> compute_control_vector(const numeric_vector<2>& target, double
     if (theta >= -2.0 * PItheta / 3.0 && theta < 0.0) {
         u3 = -TWO_INV_SQRT3 * Y;
     }
+
     else if ((theta >= 2.0 * PItheta / 3.0 && theta <= PItheta) ||
-             (theta > -PItheta && theta < -2.0 * PI / 3.0)) {
+             (theta > -PItheta && theta < -2.0 * PItheta / 3.0)) {
         u3 = -X - INV_SQRT3 * Y;
     }
 
@@ -99,39 +103,25 @@ numeric_vector<3> compute_control_vector(const numeric_vector<2>& target, double
     return out;
 }
 
+void PID_Control(double error, float dt, float &output)
+{
+    static float integral = 0;
+    static float prev_error = 0;
 
-// --- Example ---
+    float Kp = 1.0;
+    float Ki = 0.0;
+    float Kd = 0.1;
 
-GPSCoordinate target_waypoint = {13.736717, 100.523186};
+    // Integral
+    integral += error * dt;
 
-void setup() {
-  Serial.begin(115200);
-  while (!Serial) delay(10);
+    // Derivative
+    float derivative = (error - prev_error) / dt;
 
-  GPSCoordinate current     = {13.736000, 100.523000};
-  double        heading_deg = 0.0;  // input heading (deg)
+    // PID output
+    output = (Kp * error) + (Ki * integral) + (Kd * derivative);
 
-  double dist    = calculate_distance(current, target_waypoint);
-  double bearing = calculate_bearing(current, target_waypoint);
-
-  // Body-frame transform
-  double theta = (heading_deg - bearing) * DEG_TO_RAD_VAL;
-
-  numeric_vector<2> body_vec{};
-  body_vec[0] = dist * cos(theta);  // X (forward)
-  body_vec[1] = dist * sin(theta);  // Y (left)
-
-  numeric_vector<3> u = compute_control_vector(body_vec, theta);
-
-  Serial.println("--- Control Output ---");
-  Serial.print("U1: ");
-  Serial.println(u[0]);
-  Serial.print("U2: ");
-  Serial.println(u[1]);
-  Serial.print("U3: ");
-  Serial.println(u[2]);
+    prev_error = error;
 }
 
-void loop() {
-  delay(1000);
-}
+#endif CONTROLLING_H

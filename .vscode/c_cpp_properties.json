@@ -123,7 +123,7 @@
                 ]
             },
             "defines": [
-                "PLATFORMIO=60118",
+                "PLATFORMIO=60119",
                 "STM32H7",
                 "STM32H7xx",
                 "STM32H725xx",
