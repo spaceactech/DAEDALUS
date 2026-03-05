@@ -29,10 +29,17 @@ public:
   }
 
   bool read() override {
-    return acc.Get_X_Axes(&accel) == ISM6HG256X_OK &&
-           acc.Get_G_Axes(&angrate) == ISM6HG256X_OK;
-    ax = accel.x, ay = accel.y, az = accel.z;
-    gx = angrate.x, gy = angrate.y, gz = angrate.z;
+    bool ok = acc.Get_X_Axes(&accel) == ISM6HG256X_OK &&
+              acc.Get_G_Axes(&angrate) == ISM6HG256X_OK;
+    if (ok) {
+      ax = accel.x;
+      ay = accel.y;
+      az = accel.z;
+      gx = angrate.x;
+      gy = angrate.y;
+      gz = angrate.z;
+    }
+    return ok;
   }
 
   double acc_x() override {

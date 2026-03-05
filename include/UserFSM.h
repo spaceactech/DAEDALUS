@@ -14,8 +14,8 @@ enum class UserState : uint8_t {
   ASCENT,
   APOGEE,
   DESCENT,
-  PROBE_REALEASE,
-  PAYLOAD_REALEASE,
+  PROBE_RELEASE,
+  PAYLOAD_RELEASE,
   LANDED
 };
 
@@ -33,10 +33,10 @@ inline const char *state_string(const UserState state) {
       return "APOGEE";
     case UserState::DESCENT:
       return "DESCENT";
-    case UserState::PROBE_REALEASE:
-      return "PROBE_REALEASE";
-    case UserState::PAYLOAD_REALEASE:
-      return "PAYLOAD_REALEASE";
+    case UserState::PROBE_RELEASE:
+      return "PROBE_RELEASE";
+    case UserState::PAYLOAD_RELEASE:
+      return "PAYLOAD_RELEASE";
     case UserState::LANDED:
       return "LANDED";
     default:

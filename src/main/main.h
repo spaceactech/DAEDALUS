@@ -10,7 +10,7 @@ bool telemetry_enabled = false;
 /* Simulation mode */
 bool     simEnabled   = false;
 bool     simActivated = false;
-uint32_t simPressure;
+float    simPressure  = 101325.0f;  // default: sea-level in Pa, overwritten by SIMP command
 String   rx_message = "";
 
 /* ACK / NACK counters */

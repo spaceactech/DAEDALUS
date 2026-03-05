@@ -64,7 +64,7 @@ constexpr uint32_t RA_INTERVAL_AUTOZERO = 50ul;  // ms
 
 // Start-up Countdown (for time-based arming)
 constexpr bool     RA_STARTUP_COUNTDOWN_ENABLED = true;
-constexpr uint32_t RA_STARTUP_COUNTDOWN         = 0. * 1000ul;
+constexpr uint32_t RA_STARTUP_COUNTDOWN         = 0ul;  // 0 ms = no countdown (adjust when needed)
 
 /* ACTUATOR SETTINGS */
 

@@ -55,23 +55,6 @@ SensorAltimeter *altimeter[RA_NUM_ALTIMETER] = {
   new Altimeter_BMP581(USER_GPIO_BMP581_NSS),  // Altimeter #1
 };
 
-struct SERVO {
-  uint32_t pin;
-  SERVO(uint32_t pin) : pin(pin) {
-    pinMode(pin, OUTPUT);
-  }
-
-  void write(int angle) {
-    const int cpw = map(angle, 0, 180, 500, 2500);
-    for (size_t i = 0; i < max(5, 20); ++i) {
-      digitalWrite(pin, HIGH);
-      delayMicroseconds(cpw);
-      digitalWrite(pin, LOW);
-      delayMicroseconds(20000);
-    }
-  }
-};
-SERVO servo_a(USER_GPIO_SERVO_A);
 
 /* END SENSOR INSTANCES */
 
@@ -167,8 +150,8 @@ uint32_t LoggerInterval() {
       return RA_SDLOGGER_INTERVAL_REALTIME;
 
     case UserState::DESCENT:
-    case UserState::PROBE_REALEASE:
-    case UserState::PAYLOAD_REALEASE:
+    case UserState::PROBE_RELEASE:
+    case UserState::PAYLOAD_RELEASE:
       return RA_SDLOGGER_INTERVAL_FAST;
 
     case UserState::LANDED:
@@ -196,9 +179,10 @@ void UserSetupGPIO() {
 }
 
 void UserSetupActuator() {
+  servos.attach(USER_GPIO_SERVO_A, RA_SERVO_MIN, RA_SERVO_MAX, RA_SERVO_MAX);
   servos.attach(USER_GPIO_SERVO_B, RA_SERVO_MIN, RA_SERVO_MAX, RA_SERVO_MAX);
-  servos[0].write(0);
-  servos[0].write(180);
+  servos[0].write(RA_SERVO_A_LOCK);
+  servos[1].write(0);
 }
 
 void UserSetupCDC() {
@@ -305,7 +289,6 @@ void CB_ReadI2C(void *) {
       // ReadINA();
       ReadMAG();
       ReadTOF();
-      Serial.println("I2C");
     });
   });
 }
@@ -466,10 +449,9 @@ void CB_ConstructData(void *) {
 }
 
 void CB_SDLogger(void *) {
-  hal::rtos::interval_loop(200ul, [&]() -> void {  //LoggerInterval(), LoggerInterval, [&]() -> void {
+  hal::rtos::interval_loop(200ul, [&]() -> void {
     mtx_sdio.exec([&]() -> void {
       fs_sd.file() << sd_buf;
-      Serial.println("logged");
     });
   });
 }
@@ -478,7 +460,6 @@ void CB_SDSave(void *) {
   hal::rtos::interval_loop(1000ul, [&]() -> void {
     mtx_sdio.exec([&]() -> void {
       fs_sd.file().flush();
-      Serial.println("flushed");
     });
   });
 }
@@ -587,18 +568,20 @@ void setup() {
   fs_sd.open_one<FsMode::WRITE>();
   sd_buf.reserve(1024);
   /* CSV Header */
-  fs_sd.file() << "ID,COUNT,EPOCH,MILLIS,MODE,"
-                  "AX,AY,AZ,ACC,ACC_KF,"
-                  "GX,GY,GZ,"
-                  "MX,MY,MZ,"
-                  "UTC,GPS_ALT,LAT,LON,SIV,"
-                  "VEL,POS,ALT,TEMP,PRESS,AGL,ALT_REF,APOGEE\r\n";
+  fs_sd.file() << "ID,COUNT,EPOCH,MILLIS,STATE,"
+                   "TEAM_ID,UTC,PACKET_COUNT,MODE,"
+                   "STATE,ALTITUDE,"
+                   "TEMPERATURE,PRESSURE,VOLTAGE,CURRENT,"
+                   "GYRO_R,GYRO_P,GYRO_Y,ACCEL_R,ACCEL_P,ACCEL_Y,"
+                   "GPS_TIME,GPS_ALTITUDE,GPS_LATITUDE,GPS_LONGITUDE,GPS_SATS,"
+                   "CMD_ECHO,HEADING,MAG_X,MAG_Y,MAG_Z,TOF,DEPLOY,"
+                   "ALT_AGL,ALT_REF,APOGEE,SERVO_A,CPU_TEMP\r\n";
   fs_sd.file().flush();
   /* END STORAGES SETUP */
 
   /* BEGIN GPIO AND INTERFACES SETUP */
   UserSetupGPIO();
-  // UserSetupActuator();
+  UserSetupActuator();
   UserSetupCDC();
   UserSetupUSART();
   UserSetupI2C();
@@ -692,8 +675,8 @@ void EvalFSM() {
       sampler_sec.add_sample(alt_agl);  // Use filtered alt
 
 
-      if (sampler.is_sampled() &&
-          sampler.over_by_under<double>() > RA_TRUE_TO_FALSE_RATIO) {
+      if (sampler_sec.is_sampled() &&
+          sampler_sec.over_by_under<double>() > RA_TRUE_TO_FALSE_RATIO) {
         if constexpr (RA_LED_ENABLED) {
           digitalWrite(USER_GPIO_BUZZER, 0);
         }
@@ -732,11 +715,11 @@ void EvalFSM() {
 
     case UserState::DESCENT: {
       // <--- Next: activate pyro/servo and always transfer --->
-      fsm.transfer(UserState::PROBE_REALEASE);
+      fsm.transfer(UserState::PROBE_RELEASE);
       break;
     }
 
-    case UserState::PROBE_REALEASE: {
+    case UserState::PROBE_RELEASE: {
       // !!!! Next: DETECT main deployment altitude !!!!
       if (fsm.on_enter()) {  // Run once
         sampler.reset();
@@ -761,12 +744,12 @@ void EvalFSM() {
 
       if (cond_alt_lower) {
         ActivateDeployment(0);
-        fsm.transfer(UserState::PAYLOAD_REALEASE);
+        fsm.transfer(UserState::PAYLOAD_RELEASE);
       }
       break;
     }
 
-    case UserState::PAYLOAD_REALEASE: {
+    case UserState::PAYLOAD_RELEASE: {
       // !!!! Next: DETECT landing !!!!
       if (fsm.on_enter()) {  // Run once
         sampler.reset();
@@ -826,17 +809,20 @@ void ReadAltimeter() {
         !altimeter[i]->read())
       continue;
     if (simActivated && simEnabled) {
-      // Serial.println("SIM");
-      alt_agl = altitude_msl_from_pressure(simPressure / 100.F, qnh_hpa);
-      // Serial.println(alt_agl);
+      alt_agl = altitude_msl_from_pressure(simPressure / 100.0f, qnh_hpa);
+      // keep altitude_m consistent so the SD log and KF see the same value
+      data.altimeter[i].altitude_m = alt_agl + alt_ref;
+      filter_alt.kf.update({data.altimeter[i].altitude_m});
     } else {
       data.altimeter[i].pressure_hpa = altimeter[i]->pressure_hpa();
-      // Serial.println("REAL");
-      ;
     }
 
-    data.altimeter[i].altitude_m  = altimeter[i]->altitude_m();
+    // temperature is always read from the physical sensor
     data.altimeter[i].temperature = altimeter[i]->temperature();
+    // altitude_m is set by the sim block above; only update from sensor in real mode
+    if (!(simActivated && simEnabled)) {
+      data.altimeter[i].altitude_m = altimeter[i]->altitude_m();
+    }
   }
 }
 
@@ -897,9 +883,9 @@ void ReadTOF() {
 
 void ActivateDeployment(const size_t index) {
   switch (index) {
-    case 0: {  // Drogue/First Deployment
+    case 0: {  // first deployment - release servo A
       pos_a = RA_SERVO_A_RELEASE;
-      servo_a.write(pos_a);
+      servos[0].write(static_cast<int>(pos_a));
       break;
     }
 
