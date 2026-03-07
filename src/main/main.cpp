@@ -227,6 +227,7 @@ void UserSetupI2C() {
 void UserSetupSensor() {
   if (ina.begin()) {
     Serial.println("Ina Success");
+    ina.setMaxCurrentShunt(10, 0.002);
     pvalid.ina = true;
   }
 
@@ -248,7 +249,7 @@ void UserSetupSensor() {
     m10s.setI2COutput(COM_TYPE_UBX, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
     m10s.setNavigationFrequency(25, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
     m10s.setAutoPVT(true, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
-    m10s.setDynamicModel(DYN_MODEL_AUTOMOTIVE, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);  //DYN_MODEL_AIRBORNE4g
+    m10s.setDynamicModel(DYN_MODEL_AIRBORNE4g, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);  
     pvalid.m10s = true;
   }
 
@@ -863,7 +864,7 @@ void ReadGNSS() {
 void ReadINA() {
   if (pvalid.ina) {
     data.batt_volt = ina.getBusVoltage();
-    // data.batt_curr = ina.getCurrent_mA() / 1000;  // A;
+    data.batt_curr = ina.getCurrent_mA() / 1000;  // A;
   }
 }
 
