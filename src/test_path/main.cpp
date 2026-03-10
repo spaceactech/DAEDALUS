@@ -25,10 +25,8 @@ void loop() {
 
   Serial.print("U1_ref: ");
   Serial.println(control[0]);
-
   Serial.print("U2_ref: ");
   Serial.println(control[1]);
-
   Serial.print("U3_ref: ");
   Serial.println(control[2]);
 
@@ -38,10 +36,8 @@ void loop() {
 
   Serial.print("U1: ");
   Serial.println(u1);
-
   Serial.print("U2: ");
   Serial.println(u2);
-
   Serial.print("U3: ");
   Serial.println(u3);
 

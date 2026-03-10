@@ -25,7 +25,8 @@ public:
     return acc.begin() == ISM6HG256X_OK &&
            acc.Enable_X() == ISM6HG256X_OK &&
            acc.Enable_HG_X() == ISM6HG256X_OK &&
-           acc.Enable_G() == ISM6HG256X_OK;
+           acc.Enable_G() == ISM6HG256X_OK &&
+           ;
   }
 
   bool read() override {
@@ -66,7 +67,7 @@ protected:
   bmp5_osr_odr_press_config bmp_osr =
     {
       .osr_t    = BMP5_OVERSAMPLING_8X,    // T Oversampling
-      .osr_p    = BMP5_OVERSAMPLING_128X,  // P Oversampling
+      .osr_p    = BMP5_OVERSAMPLING_64X,  // P Oversampling
       .press_en = 0,                       // UNUSED
       .odr      = 0                        // UNUSED
     };
@@ -88,7 +89,7 @@ public:
   }
 
   double pressure_hpa() override {
-    return data.pressure * 0.01;  // Pa -> hPa
+    return data.pressure * 0.01;  // Pa -> kPa
   }
 
   double temperature() override {

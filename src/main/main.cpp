@@ -1,5 +1,5 @@
 /* BEGIN INCLUDE SYSTEM LIBRARIES */
-#include <Arduino.h>          // Arduino Framework
+#include <Arduino.h>  // Arduino Framework
 #include <lib_xcore>
 #include <xcore/math_module>
 #include <File_Utility.h>     // File Utility
@@ -107,6 +107,8 @@ struct DataMemory {
   double  latitude;
   double  longitude;
   double  altitude_msl;
+  double  velocity_n;
+  double  velocity_e;
   uint8_t hh, mm, ss;
 
   float batt_volt;
@@ -228,6 +230,7 @@ void UserSetupSensor() {
   if (ina.begin()) {
     Serial.println("Ina Success");
     ina.setMaxCurrentShunt(10, 0.002);
+    ina.setAverage(INA236_64_SAMPLES);
     pvalid.ina = true;
   }
 
@@ -249,7 +252,7 @@ void UserSetupSensor() {
     m10s.setI2COutput(COM_TYPE_UBX, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
     m10s.setNavigationFrequency(25, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
     m10s.setAutoPVT(true, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
-    m10s.setDynamicModel(DYN_MODEL_AIRBORNE4g, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);  
+    m10s.setDynamicModel(DYN_MODEL_AIRBORNE4g, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
     pvalid.m10s = true;
   }
 
@@ -849,6 +852,9 @@ void ReadGNSS() {
       data.latitude        = static_cast<double>(m10s.getLatitude(UBLOX_CUSTOM_MAX_WAIT)) * 1.e-7;
       data.longitude       = static_cast<double>(m10s.getLongitude(UBLOX_CUSTOM_MAX_WAIT)) * 1.e-7;
       data.altitude_msl    = static_cast<float>(m10s.getAltitudeMSL(UBLOX_CUSTOM_MAX_WAIT)) * 1.e-3f;
+
+      data.velocity_n = static_cast<double>(m10s.getNedNorthVel(UBLOX_CUSTOM_MAX_WAIT)) * 1.e-3f;  //m/s
+      data.velocity_e = static_cast<double>(m10s.getNedEastVel(UBLOX_CUSTOM_MAX_WAIT)) * 1.e-3f;
 
       data.hh = m10s.getHour(UBLOX_CUSTOM_MAX_WAIT);
       data.mm = m10s.getMinute(UBLOX_CUSTOM_MAX_WAIT);
