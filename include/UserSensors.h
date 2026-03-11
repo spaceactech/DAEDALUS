@@ -25,8 +25,7 @@ public:
     return acc.begin() == ISM6HG256X_OK &&
            acc.Enable_X() == ISM6HG256X_OK &&
            acc.Enable_HG_X() == ISM6HG256X_OK &&
-           acc.Enable_G() == ISM6HG256X_OK &&
-           ;
+           acc.Enable_G() == ISM6HG256X_OK;
   }
 
   bool read() override {
