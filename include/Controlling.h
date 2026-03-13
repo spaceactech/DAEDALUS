@@ -7,7 +7,7 @@
 #include <lib_xcore>
 #include <xcore/math_module>
 #include <xcore/dispatcher>
-#include <SCServo.h>
+#include <STSServoDriver.h>
 
 // ---------------- VECTOR ALIAS ----------------
 
@@ -28,13 +28,13 @@ See For "change"
 
 // ---------------- CONSTANTS ----------------
 
-constexpr double EARTH_RADIUS_M = 6371000.0;
+constexpr double EARTH_RADIUS_M     = 6371000.0;
 constexpr double DISTANCE_TO_TARGET = 59.16;
 
 constexpr double SPOOL_RADIUS = 0.0109;
-constexpr double dL_max = 0.2;  // rope pull limit **Change
+constexpr double dL_max       = 0.2;  // rope pull limit **Change
 
-constexpr double ENC_TO_DEG = 360.0 / 4096.0; // **Change
+constexpr double ENC_TO_DEG = 360.0 / 4096.0;  // **Change
 
 // ---------------- SERVO IDS ----------------
 
@@ -45,28 +45,27 @@ constexpr uint8_t SERVO3_ID = 3;
 
 // ---------------- SERVO DRIVER ----------------
 // PID gains (tune later)
-constexpr double KP = 2.0;
-constexpr double KI = 0.0;
+constexpr double KP = 12.0;
+constexpr double KI = 0.01;
 constexpr double KD = 0.15;
 
-HLSCL servo;
+STSServoDriver servo;
 
 // ---------------- PID CONTROLLERS ----------------
 
-xcore::pid_controller_t<uint32_t> pid1(KP,KI,KD);
-xcore::pid_controller_t<uint32_t> pid2(KP,KI,KD);
-xcore::pid_controller_t<uint32_t> pid3(KP,KI,KD);
+xcore::pid_controller_t<uint32_t> pid1(KP, KI, KD);
+xcore::pid_controller_t<uint32_t> pid2(KP, KI, KD);
+xcore::pid_controller_t<uint32_t> pid3(KP, KI, KD);
 
 
 // ---------------- PID INIT ----------------
 
-void init_pid()
-{
+void init_pid() {
   pid1.update_limits(-3500, 3500);
   pid2.update_limits(-3500, 3500);
   pid3.update_limits(-3500, 3500);
 
-  pid1.update_dt(0.02);
+  pid1.update_dt(0.05);
   pid2.update_dt(0.02);
   pid3.update_dt(0.02);
 }
@@ -75,27 +74,25 @@ void init_pid()
 // MULTI-TURN ENCODER TRACKING
 // =====================================================
 
-struct EncoderTracker
-{
-    int prev_pos = 0;
-    long rotation_count = 0;
+struct EncoderTracker {
+  int  prev_pos       = 0;
+  long rotation_count = 0;
 
-    double update(int pos)
-    {
-        int diff = pos - prev_pos;
+  double update(int pos) {
+    int diff = pos - prev_pos;
 
-        if (diff > 2048)
-            rotation_count--;
+    if (diff > 2048)
+      rotation_count--;
 
-        if (diff < -2048)
-            rotation_count++;
+    if (diff < -2048)
+      rotation_count++;
 
-        prev_pos = pos;
+    prev_pos = pos;
 
-        long total_counts = rotation_count * 4096L + pos;
+    long total_counts = rotation_count * 4096L + pos;
 
-        return total_counts * ENC_TO_DEG;
-    }
+    return total_counts * ENC_TO_DEG;
+  }
 };
 
 // trackers for each servo
@@ -172,10 +169,10 @@ double calculate_distance(GPSCoordinate p1, GPSCoordinate p2) {
   double c =
     2 * std::atan2(std::sqrt(a), std::sqrt(1 - a));
 
-  double distance = 
+  double distance =
     EARTH_RADIUS_M * c;
 
-  double ratio_distance = distance / DISTANCE_TO_TARGET; // (0, 1)
+  double ratio_distance = distance / DISTANCE_TO_TARGET;  // (0, 1)
   if (ratio_distance >= 1)
     ratio_distance = 1;
 
@@ -186,7 +183,7 @@ double calculate_distance(GPSCoordinate p1, GPSCoordinate p2) {
 // BEARING
 // ======================================================
 
-double calculate_bearing(GPSCoordinate p1, GPSCoordinate p2) {
+double calculate_bearing(GPSCoordinate p1, GPSCoordinate p2, double theta) {
   double lat1 = p1.lat * DEG_TO_RAD;
   double lat2 = p2.lat * DEG_TO_RAD;
 
@@ -198,7 +195,7 @@ double calculate_bearing(GPSCoordinate p1, GPSCoordinate p2) {
     std::cos(lat1) * std::sin(lat2) -
     std::sin(lat1) * std::cos(lat2) * std::cos(dLon);
 
-  double bearing = std::atan2(y, x) * RAD_TO_DEG;
+  double bearing = (std::atan2(y, x) * RAD_TO_DEG) - theta;
 
   return std::fmod(bearing + 360.0, 360.0);
 }
@@ -325,7 +322,7 @@ numeric_vector<3> control_to_servo_angle(
   numeric_vector<3> angle{};
 
   for (int i = 0; i < 3; i++) {
-    double scaled = u[i]; //* 0.75;
+    double scaled = u[i] * 0.75;
 
     double dL = scaled * dL_max;
 
@@ -342,14 +339,15 @@ numeric_vector<3> control_to_servo_angle(
 // READ MULTI TURN ANGLE
 // =====================================================
 
-double read_angle(uint8_t id, EncoderTracker &tracker)
-{
-    int pos = servo.ReadPos(id);
+double read_angle(uint8_t id, EncoderTracker &tracker) {
+  int pos = servo.getCurrentPosition(id);
 
-    if(pos < 0)
-        return 0;
+  if (pos < 0)
+    return 0;
 
-    return tracker.update(pos);
+  // Serial.println(pos);
+
+  return tracker.update(pos);
 }
 
 // =====================================================
@@ -357,24 +355,23 @@ double read_angle(uint8_t id, EncoderTracker &tracker)
 // =====================================================
 
 int compute_speed(
-        xcore::pid_controller_t<uint32_t> &pid,
-        double target_angle,
-        double current_angle)
-{
-    double speed = pid.update(target_angle, current_angle, 0.02);
+  xcore::pid_controller_t<uint32_t> &pid,
+  double                             target_angle,
+  double                             current_angle) {
+  double speed = pid.update(target_angle, current_angle, 0.02);
 
-    speed = constrain(speed, -3500, 3500);
+  speed = constrain(speed, -3500, 3500);
 
-    return (int)speed;
+  return (int) speed;
 }
 
 // =====================================================
 // Apply speed to servo (wheel mode)
 // =====================================================
 
-void write_speed(uint8_t id, int speed)
-{
-    servo.WriteSpe(id, speed, 50, 500);
+void write_speed(uint8_t id, int speed) {
+  servo.setTargetVelocity(id, speed);
+  delay(10);
 }
 
 // ======================================================
@@ -386,7 +383,8 @@ numeric_vector<3> guidance_update(
   GPSCoordinate target,
   double        altitude,
   double        vN,
-  double        vE) {
+  double        vE,
+  double        theta_offset) {
   static double prev_dv     = 0;
   static double prev_dtheta = 0;
   static double at          = 0.2;  //Change
@@ -396,7 +394,7 @@ numeric_vector<3> guidance_update(
     calculate_distance(current, target);
 
   double bearing =
-    calculate_bearing(current, target);
+    calculate_bearing(current, target, theta_offset);
 
   auto nav =
     compute_velocity_navigation(vN, vE);
@@ -445,36 +443,35 @@ numeric_vector<3> guidance_update(
 // input = numeric_vector<3> target angles
 // =====================================================
 
-void servo_pid_update(const numeric_vector<3> &target_angles)
-{
-    // ---- Read current angles ----
+void servo_pid_update(const numeric_vector<3> &target_angles) {
+  // ---- Read current angles ----
 
-    double angle1 = read_angle(SERVO1_ID, enc1);
-    double angle2 = read_angle(SERVO2_ID, enc2);
-    double angle3 = read_angle(SERVO3_ID, enc3);
+  double angle1 = read_angle(SERVO1_ID, enc1);
+  double angle2 = read_angle(SERVO2_ID, enc2);
+  double angle3 = read_angle(SERVO3_ID, enc3);
 
-    // ---- Compute PID speeds ----
+  // ---- Compute PID speeds ----
 
-    int speed1 = compute_speed(pid1, target_angles[0], angle1);
-    int speed2 = compute_speed(pid2, target_angles[1], angle2);
-    int speed3 = compute_speed(pid3, target_angles[2], angle3);
+  int speed1 = compute_speed(pid1, target_angles[0], angle1);
+  int speed2 = compute_speed(pid2, target_angles[1], angle2);
+  int speed3 = compute_speed(pid3, target_angles[2], angle3);
 
-    // ---- Small deadband ----
+  // ---- Small deadband ----
 
-    if(abs(target_angles[0] - angle1) < 0.5)
-        speed1 = 0;
+  if (abs(target_angles[0] - angle1) < 0.5)
+    speed1 = 0;
 
-    if(abs(target_angles[1] - angle2) < 0.5)
-        speed2 = 0;
+  if (abs(target_angles[1] - angle2) < 0.5)
+    speed2 = 0;
 
-    if(abs(target_angles[2] - angle3) < 0.5)
-        speed3 = 0;
+  if (abs(target_angles[2] - angle3) < 0.5)
+    speed3 = 0;
 
-    // ---- Send to servo ----
+  // ---- Send to servo ----
 
-    write_speed(SERVO1_ID, speed1);
-    write_speed(SERVO2_ID, speed2);
-    write_speed(SERVO3_ID, speed3);
+  write_speed(SERVO1_ID, speed1);
+  write_speed(SERVO2_ID, speed2);
+  write_speed(SERVO3_ID, speed3);
 }
 
 #endif

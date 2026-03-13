@@ -2,108 +2,105 @@
 #include <Arduino.h>
 #include "Controlling.h"
 #include <lib_xcore>
+#include <xcore/dispatcher>
 #include <xcore/math_module>
+#include "UserPins.h"
 
-// GPSCoordinate target_waypoint = {13.736746, 100.736746};
-// GPSCoordinate current         = {13.736780, 100.736780};
+HardwareSerial ServoSerial(USER_GPIO_XBEE_RX, USER_GPIO_XBEE_TX);
 
-double       heading_deg = 0.0;  // input heading (deg)
-static float dt          = 0.02;
-float        u1, u2, u3;
+const int SERVO_DIR_PIN = 0;
+
+// Timer start
+unsigned long startTime;
+
+double heading_deg = 0.0;
+static float dt = 0.02;
 
 GPSCoordinate current = {38.3756417, -79.6073944};
 GPSCoordinate target  = {38.3760167, -79.6078722};
 
 void setup() {
+
   Serial.begin(115200);
   delay(2000);
+
+  startTime = millis();   // start timer
+
+  ServoSerial.begin(1000000);
+
+  // Initialize servo driver
+  if (!servo.init(SERVO_DIR_PIN, &ServoSerial)) {
+    Serial.println("Servo init failed!");
+    while (1);
+  }
+
+  Serial.println("Servo initialized");
+
+  servo.writeRegister(SERVO1_ID, STSRegisters::OPERATION_MODE, 1);
+  delay(1000);
 }
 
-
 void loop() {
-  // 5 variable needed
-  // double altitude = getAltitude();
 
-  // double vN = getVelNorth();
-  // double vE = getVelEast();
-
-  // current.lat     = getLatitude();
-  // current.lon     = getLongitude();
-
+  // -------------------------------
+  // Example sensor inputs
+  // -------------------------------
   static double altitude = 5000.0;
-  altitude               = altitude - 5;
+  altitude = altitude - 5;
 
   double vN = 7.5;
   double vE = 10.0;
 
-  static double prev_dv     = 0;
+  static double prev_dv = 0;
   static double prev_dtheta = 0;
-  static double at          = 0.2;  //Change
-  static double av          = 0.2;  //Change
 
-  double distance =
-    calculate_distance(current, target);
+  static double at = 0.2;
+  static double av = 0.2;
 
-  // Serial.println(distance);
+  // ---------------------------------------------------
+  // PID SERVO CONTROL
+  // ---------------------------------------------------
+  static uint16_t interval = 50;
+  static xcore::NbDelay delay(interval, millis);
+  static xcore::NbDelay delay1(100, millis);
 
-  double bearing =
-    calculate_bearing(current, target);
+  double angle1;
+  numeric_vector<3> servo_target_angles;
 
-  auto nav =
-    compute_velocity_navigation(vN, vE);
+  delay([&]() {
 
-  double velocity = nav[0];
-  double heading  = nav[1];
+    servo_target_angles =
+      guidance_update(
+        current,
+        target,
+        altitude,
+        vN,
+        vE,
+        0);
 
-  double time_air =
-    compute_time_in_air(altitude);
+    // Read servo angle
+    angle1 = read_angle(SERVO1_ID, enc1);
 
-  double target_velocity =
-    compute_target_velocity(
-      distance,
-      time_air);
-  // Serial.println(target_velocity);
+    // PID speed control
+    int speed1 = compute_speed(pid1, servo_target_angles[0], angle1);
 
-  auto delta =
-    compute_delta_from_target(
-      velocity,
-      heading,
-      target_velocity,
-      bearing);
+    write_speed(SERVO1_ID, speed1);
+  });
 
-  double dv     = delta[0];
-  double dtheta = delta[1];
+  // ---------------------------------------------------
+  // Serial Debug Output (Time Target Current)
+  // ---------------------------------------------------
+  delay1([&]() {
 
-  // Serial.println(dv);
-  // Serial.println(dtheta);
+    double time_sec = (millis() - startTime) / 1000.0;
 
-  double dv_filtered =
-    ema_filter(dv, prev_dv, av);
+    Serial.print(time_sec);
+    Serial.print(" ");
 
-  double dtheta_filtered =
-    ema_filter(dtheta, prev_dtheta, at);
+    Serial.print(servo_target_angles[0]);
+    Serial.print(" ");
 
-  prev_dv     = dv_filtered;
-  prev_dtheta = dtheta_filtered;
+    Serial.println(angle1);
+  });
 
-  // Serial.println(dv_filtered);
-  // Serial.println(dtheta_filtered);
-
-  auto target_vec =
-    compute_target_vector(distance, bearing);
-  // Serial.println(target_vec[0]);
-  // Serial.println(target_vec[1]);
-
-  auto control =
-    compute_control_vector(target_vec, bearing);
-  // Serial.println(bearing);
-  // Serial.println(control[0]);
-  // Serial.println(control[1]);
-  // Serial.println(control[2]);
-
-  auto servo = control_to_servo_angle(control);
-  Serial.println(servo[0]); //servo 1
-  Serial.println(servo[1]);
-  Serial.println(servo[2]);
-  delay(1000);
 }

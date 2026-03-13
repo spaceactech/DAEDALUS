@@ -17,6 +17,7 @@
 #include <Adafruit_Sensor.h>
 #include <Adafruit_LIS3MDL.h>
 #include <Adafruit_NeoPixel.h>
+#include <Adafruit_BNO08x.h>
 #include <INA236.h>
 #include "SparkFun_VL53L1X.h"
 /* END INCLUDE SYSTEM LIBRARIES */
@@ -37,12 +38,13 @@
 
 /* BEGIN SENSOR INSTANCES */
 SPIClass spi1(USER_GPIO_SPI1_MOSI, USER_GPIO_SPI1_MISO, USER_GPIO_SPI1_SCK);
-TwoWire  i2c1(USER_GPIO_I2C1_SDA, USER_GPIO_I2C1_SCL);
+TwoWire  i2c4(USER_GPIO_I2C4_SDA, USER_GPIO_I2C4_SCL);
 
-SFE_UBLOX_GNSS   m10s;
-INA236           ina(0x40, &i2c1);
-Adafruit_LIS3MDL lis;
-SFEVL53L1X       tof(i2c1);
+SFE_UBLOX_GNSS    m10s;
+INA236            ina(0x40, &i2c4);
+Adafruit_BNO08x   bno08x(BNO08X_RESET);
+sh2_SensorValue_t sensorValue;
+SFEVL53L1X        tof(i2c4);
 
 HardwareSerial Xbee(USER_GPIO_XBEE_RX, USER_GPIO_XBEE_TX);
 
@@ -116,13 +118,13 @@ struct DataMemory {
 
   float tof;
 
-  float mag_x;
-  float mag_y;
-  float mag_z;
+  float yaw;
+  float pitch;
+  float roll;
   float heading;
 
   bool   deploy;
-  String cmd_echo;
+  String cmd_echo = "ECHO";
 
 } data;
 
@@ -206,6 +208,8 @@ void UserSetupActuator() {
 void UserSetupCDC() {
   if constexpr (RA_USB_DEBUG_ENABLED) {
     Serial.begin(115200);
+    while (!Serial)
+      delay(1);
   }
 }
 
@@ -221,39 +225,34 @@ void UserSetupUSART() {
 }
 
 void UserSetupI2C() {
-  i2c1.setSDA(USER_GPIO_I2C1_SDA);
-  i2c1.setSCL(USER_GPIO_I2C1_SCL);
-  i2c1.begin();
+  i2c4.setSDA(USER_GPIO_I2C4_SDA);
+  i2c4.setSCL(USER_GPIO_I2C4_SCL);
+  i2c4.setClock(400000);
+  i2c4.begin();
 }
 
 void UserSetupSensor() {
   if (ina.begin()) {
-    Serial.println("Ina Success");
-    ina.setMaxCurrentShunt(10, 0.002);
+    ina.setADCRange(0);
+    ina.setMaxCurrentShunt(10, 0.008, true);
     ina.setAverage(INA236_64_SAMPLES);
+    Serial.println("Ina Success");
     pvalid.ina = true;
   }
 
-  if (lis.begin_I2C(0x1c, &i2c1)) {  // hardware I2C mode, can pass in address & alt Wire
-    lis.setPerformanceMode(LIS3MDL_HIGHMODE);
-    lis.setOperationMode(LIS3MDL_CONTINUOUSMODE);
-    lis.setDataRate(LIS3MDL_DATARATE_560_HZ);
-    lis.setRange(LIS3MDL_RANGE_16_GAUSS);
-    lis.setIntThreshold(500);
-    lis.configInterrupt(false, false, true,  // enable z axis
-                        true,                // polarity
-                        false,               // don't latch
-                        true);               // enabled!
-    Serial.println("lis Success");
-    pvalid.lis = true;
+  if (!bno08x.begin_I2C(BNO08X_ADDR, &i2c4)) {
+    Serial.println("BNO08x Found!");
+    pvalid.bno = true;
   }
 
-  if (m10s.begin(i2c1, 0x42)) {
+
+  if (m10s.begin(i2c4, 0x42)) {
     m10s.setI2COutput(COM_TYPE_UBX, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
     m10s.setNavigationFrequency(25, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
     m10s.setAutoPVT(true, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
     m10s.setDynamicModel(DYN_MODEL_AIRBORNE4g, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
     pvalid.m10s = true;
+    Serial.println("M10S found!");
   }
 
   if (tof.begin() == 0)  //Begin returns 0 on a good init
@@ -306,9 +305,9 @@ void CB_ReadI2C(void *) {
   hal::rtos::interval_loop(500ul, [&]() -> void {
     mtx_i2c.exec([&]() -> void {
       ReadGNSS();
-      // ReadINA();
-      ReadMAG();
-      ReadTOF();
+      ReadINA();
+      // ReadMAG();
+      // ReadTOF();
       Serial.println("I2C");
     });
   });
@@ -410,9 +409,9 @@ void CB_ConstructData(void *) {
 
       << data.heading
 
-      << data.mag_x
-      << data.mag_y
-      << data.mag_z
+      << data.roll
+      << data.pitch
+      << data.yaw
 
       << data.tof
       << data.deploy
@@ -464,7 +463,7 @@ void CB_ConstructData(void *) {
 
       << data.cmd_echo  // CMD_ECHO
 
-      << data.heading;
+      << data.yaw;
     // Serial.println("CB_ConstructData");
   });
 }
@@ -518,7 +517,7 @@ void CB_ReceiveCommand(void *) {
 }
 
 void CB_DebugLogger(void *) {
-  hal::rtos::interval_loop(500ul, [&]() -> void {
+  hal::rtos::interval_loop(1000ul, [&]() -> void {
     mtx_cdc.exec([&]() -> void {
       Serial.println(tx_buf);
     });
@@ -875,18 +874,22 @@ void ReadINA() {
 }
 
 void ReadMAG() {
-  if (pvalid.lis) {
-    lis.read();
-    sensors_event_t event;
-    lis.getEvent(&event);
-
-    // in uTesla units
-    data.mag_x = event.magnetic.x;
-    data.mag_y = event.magnetic.y;
-    data.mag_z = event.magnetic.z;
+  if (pvalid.bno) {
+    if (bno08x.getSensorEvent(&sensorValue)) {
+      // in this demo only one report type will be received depending on FAST_MODE define (above)
+      switch (sensorValue.sensorId) {
+        case SH2_ARVR_STABILIZED_RV:
+          quaternionToEulerRV(&sensorValue.un.arvrStabilizedRV, &ypr, true);
+        case SH2_GYRO_INTEGRATED_RV:
+          // faster (more noise?)
+          quaternionToEulerGI(&sensorValue.un.gyroIntegratedRV, &ypr, true);
+          break;
+      }
+    }
+    data.roll  = ypr.roll;
+    data.pitch = ypr.pitch;
+    data.yaw   = ypr.yaw;
   }
-
-  data.heading = atan2(data.mag_y, data.mag_x) * 180.0 / PI;
 }
 
 void ReadTOF() {

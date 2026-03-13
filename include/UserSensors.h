@@ -8,56 +8,54 @@
 #include <SparkFun_BMP581_Arduino_Library.h>
 #include <SparkFun_u-blox_GNSS_v3.h>
 
-// TwoWire i2c1(USER_GPIO_I2C1_SDA, USER_GPIO_I2C1_SCL);
 
 class IMU_ISM256 final : public SensorIMU {
 protected:
-  ISM6HG256XSensor  acc;
-  ISM6HG256X_Axes_t accel, angrate;
-  double            ax{}, ay{}, az{};
-  double            gx{}, gy{}, gz{};
+  ISM6HG256XSensor imu;
+
+  ISM6HG256X_Axes_t accel{};
+  ISM6HG256X_Axes_t gyro{};
+
+  double ax{}, ay{}, az{};
+  double gx{}, gy{}, gz{};
 
 public:
-  IMU_ISM256(SPIClass &spi, int cs) : SensorIMU(), acc(&spi, cs) {
-  }
+  IMU_ISM256(SPIClass &spi, int cs)
+      : SensorIMU(), imu(&spi, cs) {}
 
   bool begin() override {
-    return acc.begin() == ISM6HG256X_OK &&
-           acc.Enable_X() == ISM6HG256X_OK &&
-           acc.Enable_HG_X() == ISM6HG256X_OK &&
-           acc.Enable_G() == ISM6HG256X_OK;
+    return imu.begin() == ISM6HG256X_OK &&
+           imu.Enable_X() == ISM6HG256X_OK &&
+           imu.Enable_HG_X() == ISM6HG256X_OK &&
+           imu.Enable_G() == ISM6HG256X_OK;
   }
 
   bool read() override {
-    return acc.Get_X_Axes(&accel) == ISM6HG256X_OK &&
-           acc.Get_G_Axes(&angrate) == ISM6HG256X_OK;
-    ax = accel.x, ay = accel.y, az = accel.z;
-    gx = angrate.x, gy = angrate.y, gz = angrate.z;
+
+    if (imu.Get_X_Axes(&accel) != ISM6HG256X_OK)
+      return false;
+
+    if (imu.Get_G_Axes(&gyro) != ISM6HG256X_OK)
+      return false;
+
+    ax = accel.x;
+    ay = accel.y;
+    az = accel.z;
+
+    gx = gyro.x;
+    gy = gyro.y;
+    gz = gyro.z;
+
+    return true;
   }
 
-  double acc_x() override {
-    return ax;
-  }
+  double acc_x() override { return ax; }
+  double acc_y() override { return ay; }
+  double acc_z() override { return az; }
 
-  double acc_y() override {
-    return ay;
-  }
-
-  double acc_z() override {
-    return az;
-  }
-
-  double gyr_x() override {
-    return gx;
-  }
-
-  double gyr_y() override {
-    return gy;
-  }
-
-  double gyr_z() override {
-    return gz;
-  }
+  double gyr_x() override { return gx; }
+  double gyr_y() override { return gy; }
+  double gyr_z() override { return gz; }
 };
 
 class Altimeter_BMP581 final : public SensorAltimeter {
@@ -65,10 +63,10 @@ protected:
   BMP581                    bmp;
   bmp5_osr_odr_press_config bmp_osr =
     {
-      .osr_t    = BMP5_OVERSAMPLING_8X,    // T Oversampling
+      .osr_t    = BMP5_OVERSAMPLING_8X,   // T Oversampling
       .osr_p    = BMP5_OVERSAMPLING_64X,  // P Oversampling
-      .press_en = 0,                       // UNUSED
-      .odr      = 0                        // UNUSED
+      .press_en = 0,                      // UNUSED
+      .odr      = 0                       // UNUSED
     };
   bmp5_sensor_data data{};
   uint8_t          cs;
@@ -92,9 +90,41 @@ public:
   }
 
   double temperature() override {
-    return data.temperature;  
+    return data.temperature;
   }
 };
+
+struct euler_t {
+  float yaw;
+  float pitch;
+  float roll;
+} ypr;
+
+void quaternionToEuler(float qr, float qi, float qj, float qk, euler_t* ypr, bool degrees = false) {
+
+    float sqr = sq(qr);
+    float sqi = sq(qi);
+    float sqj = sq(qj);
+    float sqk = sq(qk);
+
+    ypr->yaw = atan2(2.0 * (qi * qj + qk * qr), (sqi - sqj - sqk + sqr));
+    ypr->pitch = asin(-2.0 * (qi * qk - qj * qr) / (sqi + sqj + sqk + sqr));
+    ypr->roll = atan2(2.0 * (qj * qk + qi * qr), (-sqi - sqj + sqk + sqr));
+
+    if (degrees) {
+      ypr->yaw *= RAD_TO_DEG;
+      ypr->pitch *= RAD_TO_DEG;
+      ypr->roll *= RAD_TO_DEG;
+    }
+}
+
+void quaternionToEulerRV(sh2_RotationVectorWAcc_t* rotational_vector, euler_t* ypr, bool degrees = false) {
+    quaternionToEuler(rotational_vector->real, rotational_vector->i, rotational_vector->j, rotational_vector->k, ypr, degrees);
+}
+
+void quaternionToEulerGI(sh2_GyroIntegratedRV_t* rotational_vector, euler_t* ypr, bool degrees = false) {
+    quaternionToEuler(rotational_vector->real, rotational_vector->i, rotational_vector->j, rotational_vector->k, ypr, degrees);
+}
 
 // class GNSS_M10S final : public SensorGNSS {
 // protected:
