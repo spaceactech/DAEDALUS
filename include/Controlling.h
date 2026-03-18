@@ -15,17 +15,6 @@ template<size_t Size>
 using numeric_vector = xcore::numeric_vector<Size>;
 
 
-// ---------------- STRUCT ----------------
-
-struct GPSCoordinate {
-  double lat;
-  double lon;
-};
-
-/*
-See For "change"
-*/
-
 // ---------------- CONSTANTS ----------------
 
 constexpr double EARTH_RADIUS_M     = 6371000.0;
@@ -36,46 +25,13 @@ constexpr double dL_max       = 0.2;  // rope pull limit **Change
 
 constexpr double ENC_TO_DEG = 360.0 / 4096.0;  // **Change
 
-// ---------------- SERVO IDS ----------------
 
-uint8_t servo_ids[] = {1, 2, 3};
-uint8_t SERVO1_ID   = 0;
-uint8_t SERVO2_ID   = 1;
-uint8_t SERVO3_ID   = 2;
+// ---------------- STRUCT ----------------
 
-// ---------------- SERVO DRIVER ----------------
-// PID gains (tune later)
-constexpr double KP = 24.0; //12
-constexpr double KI = 0.0;
-constexpr double KD = 0.15;
-
-SMS_STS sms_sts;
-
-uint8_t rxPacket[4];
-byte    servo_accels    = 255;
-
-// ---------------- PID CONTROLLERS ----------------
-
-xcore::pid_controller_t<uint32_t> pid1(KP, KI, KD);
-xcore::pid_controller_t<uint32_t> pid2(KP, KI, KD);
-xcore::pid_controller_t<uint32_t> pid3(KP, KI, KD);
-
-
-// ---------------- PID INIT ----------------
-
-void init_pid() {
-  pid1.update_limits(-32767, 32767);
-  pid2.update_limits(-32767, 32767);
-  pid3.update_limits(-32767, 32767);
-
-  pid1.update_dt(0.05);
-  pid2.update_dt(0.02);
-  pid3.update_dt(0.02);
-}
-
-// =====================================================
-// MULTI-TURN ENCODER TRACKING
-// =====================================================
+struct GPSCoordinate {
+  double lat;
+  double lon;
+};
 
 struct EncoderTracker {
   int  prev_pos       = 0;
@@ -98,11 +54,42 @@ struct EncoderTracker {
   }
 };
 
-// trackers for each servo
+// ---------------- SERVO IDS ----------------
 
-EncoderTracker enc1;
-EncoderTracker enc2;
-EncoderTracker enc3;
+constexpr uint8_t servo_ids[3] = {1, 2, 3};
+
+// ---------------- SERVO DRIVER ----------------
+// PID gains (tune later)
+constexpr double KP = 24.0;  //12
+constexpr double KI = 0.0;
+constexpr double KD = 0.15;
+
+SMS_STS sms_sts;
+
+uint8_t rxPacket[4];
+byte    servo_accels = 255;
+
+// ---------------- PID CONTROLLERS ----------------
+
+struct Controller {
+  xcore::pid_controller_t<decltype(millis())> pid_controllers[3] = {
+    xcore::pid_controller_t<decltype(millis())>(KP, KI, KD),  //
+    xcore::pid_controller_t<decltype(millis())>(KP, KI, KD),  //
+    xcore::pid_controller_t<decltype(millis())>(KP, KI, KD),  //
+  };
+
+  EncoderTracker encoder_trackers[3]{};
+
+  void init_pid() {
+    for (auto &pid: pid_controllers) {
+      pid.update_limits(-32767, 32767);
+      pid.update_dt(0.05);
+    }
+  }
+
+
+};
+
 
 // ======================================================
 // COMPUTE TIME IN AIR
@@ -360,24 +347,21 @@ double read_angle(uint8_t id, EncoderTracker &tracker) {
 // PID speed computation
 // =====================================================
 
-int compute_speed(
-  xcore::pid_controller_t<uint32_t> &pid,
-  double                             target_angle,
-  double                             current_angle) {
+inline int16_t compute_speed(xcore::pid_controller_t<uint32_t> &pid,
+                             const double                      &target_angle,
+                             const double                      &current_angle) {
   double speed = pid.update(target_angle, current_angle, 0.02);
+  speed        = constrain(speed, -32767.0, 32767.0);
 
-  speed = constrain(speed, -32767, 32767);
-
-  return (int) speed;
+  return static_cast<int16_t>(speed);
 }
 
 // =====================================================
 // Apply speed to servo (wheel mode)
 // =====================================================
 
-void write_speed(uint8_t id, int speed) {
+inline void write_speed(const uint8_t id, const int16_t speed) {
   sms_sts.WriteSpe(id, speed, servo_accels);
-
 }
 
 // ======================================================

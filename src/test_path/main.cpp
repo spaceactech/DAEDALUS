@@ -17,8 +17,9 @@ static float dt          = 0.02;
 GPSCoordinate current = {38.3756417, -79.6073944};
 GPSCoordinate target  = {38.3760167, -79.6078722};
 
-void setup() {
+Controller controller;
 
+void setup() {
   Serial.begin(115200);
   delay(4000);
 
@@ -77,7 +78,7 @@ void loop() {
     angle1 = read_angle(0, enc1);
 
     // PID speed control
-    s16 speed1 = compute_speed(pid1, servo_target_angles[0], angle1);
+    const int16_t speed1 = compute_speed(pid1, servo_target_angles[0], angle1);
 
     Serial.print("Control: ");
     Serial.println(speed1);
