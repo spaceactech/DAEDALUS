@@ -45,8 +45,8 @@ uint8_t SERVO3_ID   = 2;
 
 // ---------------- SERVO DRIVER ----------------
 // PID gains (tune later)
-constexpr double KP = 12.0;
-constexpr double KI = 0;
+constexpr double KP = 24.0; //12
+constexpr double KI = 0.0;
 constexpr double KD = 0.15;
 
 SMS_STS sms_sts;
@@ -64,9 +64,9 @@ xcore::pid_controller_t<uint32_t> pid3(KP, KI, KD);
 // ---------------- PID INIT ----------------
 
 void init_pid() {
-  pid1.update_limits(-10000, 10000);
-  pid2.update_limits(-10000, 10000);
-  pid3.update_limits(-10000, 10000);
+  pid1.update_limits(-32767, 32767);
+  pid2.update_limits(-32767, 32767);
+  pid3.update_limits(-32767, 32767);
 
   pid1.update_dt(0.05);
   pid2.update_dt(0.02);
@@ -366,7 +366,7 @@ int compute_speed(
   double                             current_angle) {
   double speed = pid.update(target_angle, current_angle, 0.02);
 
-  speed = constrain(speed, -10000, 10000);
+  speed = constrain(speed, -32767, 32767);
 
   return (int) speed;
 }
@@ -377,7 +377,7 @@ int compute_speed(
 
 void write_speed(uint8_t id, int speed) {
   sms_sts.WriteSpe(id, speed, servo_accels);
-  delay(10);
+
 }
 
 // ======================================================

@@ -35,7 +35,6 @@ void setup() {
   }
 
   Serial.println("Servo initialized");
-
 }
 
 void loop() {
@@ -78,7 +77,7 @@ void loop() {
     angle1 = read_angle(0, enc1);
 
     // PID speed control
-    int speed1 = compute_speed(pid1, servo_target_angles[0], angle1);
+    s16 speed1 = compute_speed(pid1, servo_target_angles[0], angle1);
 
     Serial.print("Control: ");
     Serial.println(speed1);
