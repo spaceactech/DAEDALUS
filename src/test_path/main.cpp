@@ -48,20 +48,16 @@ void loop() {
   double vN = 7.5;
   double vE = 10.0;
 
-  static double prev_dv     = 0;
-  static double prev_dtheta = 0;
+  int16_t speed1;
 
-  static double at = 0.2;
-  static double av = 0.2;
-
-  // ---------------------------------------------------
-  // PID SERVO CONTROL
-  // ---------------------------------------------------
-  static uint16_t       interval = 50;
+    // ---------------------------------------------------
+    // PID SERVO CONTROL
+    // ---------------------------------------------------
+    static uint16_t     interval = 50;
   static xcore::NbDelay delay(interval, millis);
   static xcore::NbDelay delay1(100, millis);
 
-  double            angle1;
+  double            angles[3] = {};
   numeric_vector<3> servo_target_angles;
 
   delay([&]() {
@@ -75,14 +71,19 @@ void loop() {
         0);
 
     // Read servo angle
-    angle1 = controller.driver.read_angle(0);
+    angles[0] = controller.driver.read_angle(0);
+    angles[1] = controller.driver.read_angle(1);
+    angles[2] = controller.driver.read_angle(2);
 
     // PID speed control
-    const int16_t speed1 = Controller::compute_speed(controller.pid_controllers[0], servo_target_angles[0], angle1);
+    speed1 = Controller::compute_speed(controller.pid_controllers[0], servo_target_angles[0], angles[0]);
+    const int16_t speed2 = Controller::compute_speed(controller.pid_controllers[1], servo_target_angles[1], angles[1]);
+    const int16_t speed3 = Controller::compute_speed(controller.pid_controllers[2], servo_target_angles[2], angles[2]);
 
-    Serial.print("Control: ");
-    Serial.println(speed1);
-    controller.driver.write_speed(0, speed1);
+
+    controller.driver.write_speed(1, speed1);
+    controller.driver.write_speed(2, speed2);
+    controller.driver.write_speed(3, speed3);
   });
 
   // ---------------------------------------------------
@@ -94,9 +95,11 @@ void loop() {
     Serial.print(time_sec);
     Serial.print(" ");
 
+    Serial.print("Control: ");
+    Serial.println(speed1);
     Serial.print(servo_target_angles[0]);
     Serial.print(" ");
 
-    Serial.println(angle1);
+    Serial.println(angles[0]);
   });
 }

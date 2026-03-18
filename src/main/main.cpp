@@ -41,12 +41,13 @@
 SPIClass spi1(USER_GPIO_SPI1_MOSI, USER_GPIO_SPI1_MISO, USER_GPIO_SPI1_SCK);
 TwoWire  i2c4(USER_GPIO_I2C4_SDA, USER_GPIO_I2C4_SCL);
 
+HardwareSerial ServoSerial(USER_GPIO_Half);
+HardwareSerial Xbee(USER_GPIO_XBEE_RX, USER_GPIO_XBEE_TX);
+
 SFE_UBLOX_GNSS    m10s;
 INA236            ina(0x40, &i2c4);
 sh2_SensorValue_t sensorValue;
 SFEVL53L1X        tof(i2c4);
-
-HardwareSerial Xbee(USER_GPIO_XBEE_RX, USER_GPIO_XBEE_TX);
 
 Adafruit_NeoPixel led(2, USER_GPIO_LED, NEO_GRB + NEO_KHZ800);
 
@@ -115,9 +116,10 @@ String sd_buf;
 String tx_buf;
 /* END DATA MEMORY */
 
-/* EEPROM
+/* EEPROM */
 
-*/
+
+Controller controller;
 
 /* BEGIN SD CARD */
 FsUtil fs_sd;
@@ -187,9 +189,18 @@ void UserSetupGPIO() {
 }
 
 void UserSetupActuator() {
-  servos.attach(USER_GPIO_SERVO_B, RA_SERVO_MIN, RA_SERVO_MAX, RA_SERVO_MAX);
-  servos[0].write(0);
-  servos[0].write(180);
+  ServoSerial.begin(1'000'000);
+  controller.driver.sms_sts.pSerial = &ServoSerial;
+  delay(1000);
+
+  // Initialize servo driver
+  controller.driver.sms_sts.syncReadBegin(sizeof(ServoDriver::IDS), sizeof(controller.driver.rxPacket), 5);
+  for (size_t i = 0; i < sizeof(ServoDriver::IDS); ++i) {
+    controller.driver.sms_sts.WheelMode(ServoDriver::IDS[i]);
+  }
+  // servos.attach(USER_GPIO_SERVO_B, RA_SERVO_MIN, RA_SERVO_MAX, RA_SERVO_MAX);
+  // servos[0].write(0);
+  // servos[0].write(180);
 }
 
 void UserSetupCDC() {
@@ -234,7 +245,6 @@ void UserSetupSensor() {
     setReports(reportType, reportIntervalUs);
     // bno086.enableReport(SH2_GAME_ROTATION_VECTOR);
   }
-
 
   if (m10s.begin(i2c4, 0x42)) {
     m10s.setI2COutput(COM_TYPE_UBX, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
@@ -397,7 +407,9 @@ void CB_Transmit(void *) {
 void CB_Control(void *) {
   hal::rtos::interval_loop(RA_INTERVAL_Controlling, [&]() -> void {
     GPSCoordinate current = {data.latitude, data.longitude};
-    servo_target_angles = guidance_update(current, target, alt_agl, data.velocity_n, data.velocity_e, data.yaw);
+    servo_target_angles   = controller.guidance.update(current, target, alt_agl, data.velocity_n, data.velocity_e, data.yaw);
+    controller.servo_pid_update(servo_target_angles);
+    // Serial.println("Control");
   });
 }
 
@@ -454,6 +466,7 @@ void CB_NeoPixelBlink(void *) {
 
 void UserThreads() {
   hal::rtos::scheduler.create(CB_EvalFSM, {.name = "CB_EvalFSM", .stack_size = 4096, .priority = osPriorityRealtime});
+  hal::rtos::scheduler.create(CB_Control, {.name = "CB_Control", .stack_size = 4096, .priority = osPriorityRealtime});
 
   hal::rtos::scheduler.create(CB_ReadIMU, {.name = "CB_ReadIMU", .stack_size = 8192, .priority = osPriorityHigh});
   hal::rtos::scheduler.create(CB_ReadAltimeter, {.name = "CB_ReadAltimeter", .stack_size = 8192, .priority = osPriorityHigh});
@@ -505,7 +518,7 @@ void setup() {
 
   /* BEGIN GPIO AND INTERFACES SETUP */
   UserSetupGPIO();
-  // UserSetupActuator();
+  UserSetupActuator();
   UserSetupCDC();
   UserSetupUSART();
   UserSetupI2C();
@@ -549,7 +562,7 @@ void setup() {
 
   Serial.println(status);
   if (!fs_sd.file()) {
-    Serial.println("SD FILE OPEN FAILED");
+    // Serial.println("SD FILE OPEN FAILED");
   }
 
   led.setPixelColor(1, led.Color(0, 0, 255));
@@ -816,7 +829,7 @@ void ReadMAG() {
       // Serial.println(ypr.pitch);
     }
     data.yaw = ypr.yaw;
-    Serial.println(data.yaw);
+    // Serial.println(data.yaw);
     taskEXIT_CRITICAL();
   }
 }

@@ -26,10 +26,12 @@ constexpr double dL_max       = 0.2;  // rope pull limit **Change
 constexpr double ENC_TO_DEG = 360.0 / 4096.0;  // **Change
 
 // PID gains (tune later)
-constexpr double KP = 24.0;  //12
+constexpr double KP = 12.0 * 0.7;  //12
 constexpr double KI = 0.0;
 constexpr double KD = 0.15;
 
+constexpr double at = 0.2;
+constexpr double av = 0.2;
 
 // ---------------- STRUCTS ----------------
 
@@ -349,7 +351,7 @@ struct Controller {
 
   void init_pid() {
     for (auto &pid: pid_controllers) {
-      pid.update_limits(-32767, 32767);
+      pid.update_limits(-3500, 3500);
       pid.update_dt(0.05);
     }
   }
@@ -361,7 +363,7 @@ struct Controller {
     const double                      &target_angle,
     const double                      &current_angle) {
     double speed = pid.update(target_angle, current_angle, 0.02);
-    speed        = constrain(speed, -32767.0, 32767.0);
+    speed        = constrain(speed, -3500.0, 3500.0);
 
     return static_cast<int16_t>(speed);
   }
