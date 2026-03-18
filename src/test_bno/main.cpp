@@ -110,7 +110,7 @@ void loop() {
         break;
     }
     static long last = 0;
-    long now = micros();
+    long now = millis();
     Serial.print(now - last);             Serial.print("\t");
     last = now;
     Serial.print(sensorValue.status);     Serial.print("\t");  // This is accuracy in the range of 0 to 3

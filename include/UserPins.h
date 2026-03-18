@@ -4,7 +4,7 @@
 #include <Arduino.h>
 
 constexpr uint32_t USER_GPIO_LED    = PC14;
-constexpr uint32_t USER_GPIO_BUZZER = PB0;
+constexpr uint32_t USER_GPIO_BUZZER = PC15;
 
 constexpr uint32_t USER_GPIO_SERVO_A = PA2;
 constexpr uint32_t USER_GPIO_SERVO_B = PA8;
@@ -32,11 +32,14 @@ constexpr uint32_t USER_GPIO_ISM256_NSS  = PB12;
 
 constexpr uint32_t USER_GPIO_BNO_INT1 = PC4;
 #define BNO08X_RESET -1
+#define BNO08X_ADDR  0x4B
 
 constexpr uint32_t USER_GPIO_XBEE_RX   = PB5;
 constexpr uint32_t USER_GPIO_XBEE_TX   = PB_6_ALT1;
 constexpr uint32_t USER_GPIO_XBEE_NRST = PB1;
 
-#define BNO08X_ADDR 0x4B
+constexpr uint32_t USER_GPIO_PWM2 = PB9;
+constexpr uint32_t USER_GPIO_PWM3 = PA3;
+constexpr uint32_t USER_GPIO_Half = PB4;
 
 #endif  //ROCKET_AVIONICS_TEMPLATE_USERPINS_H

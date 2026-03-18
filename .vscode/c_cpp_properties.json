@@ -10,6 +10,7 @@
             "includePath": [
                 "A:/PlatformIO/DAEDA/include",
                 "A:/PlatformIO/DAEDA/src",
+                "A:/PlatformIO/DAEDA/lib/FeetechStsServos/src",
                 "A:/PlatformIO/DAEDA/lib/STM32Servo",
                 "A:/PlatformIO/DAEDA/lib/LibAvionics",
                 "A:/PlatformIO/DAEDA/.pio/libdeps/main/FTServo/src",
@@ -51,7 +52,6 @@
                 "C:/Users/ASUS/.platformio/packages/framework-cmsis-dsp/PrivateInclude",
                 "C:/Users/ASUS/.platformio/packages/framework-arduinoststm32/cores/arduino",
                 "C:/Users/ASUS/.platformio/packages/framework-arduinoststm32/variants/STM32H7xx/H725R(E-G)V_H735RGV",
-                "A:/PlatformIO/DAEDA/lib/FeetechStsServos/src",
                 "C:/Users/ASUS/.platformio/packages/framework-arduinoststm32/libraries/CMSIS_DSP/src",
                 "C:/Users/ASUS/.platformio/packages/framework-arduinoststm32/libraries/EEPROM/src",
                 "C:/Users/ASUS/.platformio/packages/framework-arduinoststm32/libraries/IWatchdog/src",
@@ -71,6 +71,7 @@
                 "path": [
                     "A:/PlatformIO/DAEDA/include",
                     "A:/PlatformIO/DAEDA/src",
+                    "A:/PlatformIO/DAEDA/lib/FeetechStsServos/src",
                     "A:/PlatformIO/DAEDA/lib/STM32Servo",
                     "A:/PlatformIO/DAEDA/lib/LibAvionics",
                     "A:/PlatformIO/DAEDA/.pio/libdeps/main/FTServo/src",
@@ -112,7 +113,6 @@
                     "C:/Users/ASUS/.platformio/packages/framework-cmsis-dsp/PrivateInclude",
                     "C:/Users/ASUS/.platformio/packages/framework-arduinoststm32/cores/arduino",
                     "C:/Users/ASUS/.platformio/packages/framework-arduinoststm32/variants/STM32H7xx/H725R(E-G)V_H735RGV",
-                    "A:/PlatformIO/DAEDA/lib/FeetechStsServos/src",
                     "C:/Users/ASUS/.platformio/packages/framework-arduinoststm32/libraries/CMSIS_DSP/src",
                     "C:/Users/ASUS/.platformio/packages/framework-arduinoststm32/libraries/EEPROM/src",
                     "C:/Users/ASUS/.platformio/packages/framework-arduinoststm32/libraries/IWatchdog/src",

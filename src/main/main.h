@@ -3,9 +3,12 @@
 
 #include <Arduino.h>  // Arduino Framework
 #include <math.h>
+#include "Controlling.h"
+
+GPSCoordinate target  = {13.723186, 100.515473};
 
 /* Telemetry control */
-bool telemetry_enabled = false;
+bool telemetry_enabled = false; // need to false
 
 /* Simulation mode */
 bool     simEnabled   = false;
@@ -33,5 +36,7 @@ extern void ReadTOF();
 extern void AutoZeroAlt();
 
 extern void HandleCommand(const String &rx);
+
+extern void ConstructString();
 
 #endif  //ROCKET_AVIONICS_TEMPLATE_MAIN_H

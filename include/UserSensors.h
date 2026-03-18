@@ -2,12 +2,17 @@
 #define ROCKET_AVIONICS_TEMPLATE_USERSENSORS_H
 
 #include <LibAvionics.h>
+#include <lib_xcore>
 #include "UserConfig.h"
 #include <SPI.h>
 #include <ISM6HG256XSensor.h>
 #include <SparkFun_BMP581_Arduino_Library.h>
 #include <SparkFun_u-blox_GNSS_v3.h>
+#include <Adafruit_BNO08x.h>
 
+Adafruit_BNO08x   bno086(BNO08X_RESET);
+
+constexpr double G = 9.80665;
 
 class IMU_ISM256 final : public SensorIMU {
 protected:
@@ -46,16 +51,16 @@ public:
     gy = gyro.y;
     gz = gyro.z;
 
-    return true;
+    return true; 
   }
 
-  double acc_x() override { return ax; }
-  double acc_y() override { return ay; }
-  double acc_z() override { return az; }
+  double acc_x() override { return ax * G / 1000; }
+  double acc_y() override { return ay * G / 1000; }
+  double acc_z() override { return az * G / 1000; }
 
-  double gyr_x() override { return gx; }
-  double gyr_y() override { return gy; }
-  double gyr_z() override { return gz; }
+  double gyr_x() override { return gx / 1000; }
+  double gyr_y() override { return gy / 1000; }
+  double gyr_z() override { return gz / 1000; }
 };
 
 class Altimeter_BMP581 final : public SensorAltimeter {
@@ -124,6 +129,22 @@ void quaternionToEulerRV(sh2_RotationVectorWAcc_t* rotational_vector, euler_t* y
 
 void quaternionToEulerGI(sh2_GyroIntegratedRV_t* rotational_vector, euler_t* ypr, bool degrees = false) {
     quaternionToEuler(rotational_vector->real, rotational_vector->i, rotational_vector->j, rotational_vector->k, ypr, degrees);
+}
+
+#ifdef FAST_MODE
+  // Top frequency is reported to be 1000Hz (but freq is somewhat variable)
+  sh2_SensorId_t reportType = SH2_GYRO_INTEGRATED_RV;
+  long reportIntervalUs = 2000;
+#else
+  // Top frequency is about 250Hz but this report is more accurate
+  sh2_SensorId_t reportType = SH2_ARVR_STABILIZED_RV;
+  long reportIntervalUs = 5000;
+#endif
+void setReports(sh2_SensorId_t reportType, long report_interval) {
+  Serial.println("Setting desired reports");
+  if (! bno086.enableReport(reportType, report_interval)) {
+    Serial.println("Could not enable stabilized remote vector");
+  }
 }
 
 // class GNSS_M10S final : public SensorGNSS {

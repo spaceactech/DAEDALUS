@@ -26,8 +26,8 @@ ISM6HG256X_Axes_t accel, angrate;
 void setup() {
   pinMode(USER_GPIO_ISM256_INT1, OUTPUT);
   pinMode(USER_GPIO_ISM256_INT2, OUTPUT);
-  digitalWrite(USER_GPIO_ISM256_INT1, 1);
-  digitalWrite(USER_GPIO_ISM256_INT2, 1);
+  // digitalWrite(USER_GPIO_ISM256_INT1, 1);
+  // digitalWrite(USER_GPIO_ISM256_INT2, 1);
 
   // Serial.begin(115200);
   delay(4000);

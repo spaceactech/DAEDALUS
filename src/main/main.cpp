@@ -27,6 +27,7 @@
 #include "UserPins.h"     // User's Pins Mapping
 #include "UserSensors.h"  // User's Hardware Implementations
 #include "UserFSM.h"      // User's FSM States
+#include "Controlling.h"
 /* END INCLUDE USER'S IMPLEMENTATIONS */
 
 /* BEGIN INCLUDE MAIN */
@@ -42,7 +43,6 @@ TwoWire  i2c4(USER_GPIO_I2C4_SDA, USER_GPIO_I2C4_SCL);
 
 SFE_UBLOX_GNSS    m10s;
 INA236            ina(0x40, &i2c4);
-Adafruit_BNO08x   bno08x(BNO08X_RESET);
 sh2_SensorValue_t sensorValue;
 SFEVL53L1X        tof(i2c4);
 
@@ -51,30 +51,13 @@ HardwareSerial Xbee(USER_GPIO_XBEE_RX, USER_GPIO_XBEE_TX);
 Adafruit_NeoPixel led(2, USER_GPIO_LED, NEO_GRB + NEO_KHZ800);
 
 SensorIMU *imu[RA_NUM_IMU] = {
-  // IMU #1
+  new IMU_ISM256(spi1, USER_GPIO_ISM256_NSS),  // IMU #1
 };
 SensorAltimeter *altimeter[RA_NUM_ALTIMETER] = {
   new Altimeter_BMP581(USER_GPIO_BMP581_NSS),  // Altimeter #1
 };
 
-struct SERVO {
-  uint32_t pin;
-  SERVO(uint32_t pin) : pin(pin) {
-    pinMode(pin, OUTPUT);
-  }
-
-  void write(int angle) {
-    const int cpw = map(angle, 0, 180, 500, 2500);
-    for (size_t i = 0; i < max(5, 20); ++i) {
-      digitalWrite(pin, HIGH);
-      delayMicroseconds(cpw);
-      digitalWrite(pin, LOW);
-      delayMicroseconds(20000);
-    }
-  }
-};
-SERVO servo_a(USER_GPIO_SERVO_A);
-
+numeric_vector<3> servo_target_angles;
 /* END SENSOR INSTANCES */
 
 /* BEGIN SENSOR STATUSES */
@@ -131,6 +114,10 @@ struct DataMemory {
 String sd_buf;
 String tx_buf;
 /* END DATA MEMORY */
+
+/* EEPROM
+
+*/
 
 /* BEGIN SD CARD */
 FsUtil fs_sd;
@@ -190,8 +177,8 @@ void UserSetupGPIO() {
   led.begin();
   led.setBrightness(10);
   led.clear();
-  led.setPixelColor(0, led.Color(255, 0, 0));
-  led.setPixelColor(1, led.Color(255, 0, 0));
+  led.setPixelColor(0, led.Color(0, 0, 255));
+  led.setPixelColor(1, led.Color(0, 0, 255));
   led.show();
   led.clear();
   digitalToggle(USER_GPIO_BUZZER);
@@ -227,22 +214,25 @@ void UserSetupUSART() {
 void UserSetupI2C() {
   i2c4.setSDA(USER_GPIO_I2C4_SDA);
   i2c4.setSCL(USER_GPIO_I2C4_SCL);
-  i2c4.setClock(400000);
+  i2c4.setClock(100000);
   i2c4.begin();
 }
 
+// i2c
 void UserSetupSensor() {
   if (ina.begin()) {
     ina.setADCRange(0);
-    ina.setMaxCurrentShunt(10, 0.008, true);
+    ina.setMaxCurrentShunt(8, 0.008);
     ina.setAverage(INA236_64_SAMPLES);
     Serial.println("Ina Success");
     pvalid.ina = true;
   }
 
-  if (!bno08x.begin_I2C(BNO08X_ADDR, &i2c4)) {
-    Serial.println("BNO08x Found!");
+  if (bno086.begin_I2C(BNO08X_ADDR, &i2c4)) {
+    Serial.println("bno086 Found!");
     pvalid.bno = true;
+    setReports(reportType, reportIntervalUs);
+    // bno086.enableReport(SH2_GAME_ROTATION_VECTOR);
   }
 
 
@@ -301,17 +291,17 @@ void CB_ReadAltimeter(void *) {
   });
 }
 
-void CB_ReadI2C(void *) {
-  hal::rtos::interval_loop(500ul, [&]() -> void {
-    mtx_i2c.exec([&]() -> void {
-      ReadGNSS();
-      ReadINA();
-      // ReadMAG();
-      // ReadTOF();
-      Serial.println("I2C");
-    });
-  });
-}
+// void CB_ReadI2C(void *) {
+//   hal::rtos::interval_loop(500ul, [&]() -> void {
+//     mtx_i2c.exec([&]() -> void {
+//       ReadGNSS();
+//       ReadINA();
+//       ReadMAG();
+//       // ReadTOF();
+//       Serial.println("I2C");
+//     });
+//   });
+// }
 
 void CB_ReadGNSS(void *) {
   hal::rtos::interval_loop(RA_INTERVAL_GNSS_READING, [&]() -> void {
@@ -326,13 +316,13 @@ void CB_ReadINA(void *) {
 }
 
 void CB_ReadMAG(void *) {
-  hal::rtos::interval_loop(RA_INTERVAL_SENSORS_READING, [&]() -> void {
+  hal::rtos::interval_loop(RA_INTERVAL_MAG_READING, [&]() -> void {
     mtx_i2c.exec(ReadMAG);
   });
 }
 
 void CB_ReadTOF(void *) {
-  hal::rtos::interval_loop(RA_INTERVAL_SENSORS_READING, [&]() -> void {
+  hal::rtos::interval_loop(RA_INTERVAL_TOF_READING, [&]() -> void {
     mtx_i2c.exec(ReadTOF);
   });
 }
@@ -350,17 +340,16 @@ void CB_EvalFSM(void *) {
       vdt.update_dt(static_cast<double>(true_interval) * 0.001);
 
       // Regenerate F with the new dt
-      // filter_acc.F = vdt.generate_F();
+      filter_acc.F = vdt.generate_F();
       filter_alt.F = vdt.generate_F();
     }
 
     // Predict states to "now"
-    // filter_acc.kf.predict();
+    filter_acc.kf.predict();
     filter_alt.kf.predict();
 
     // FSM with predicted states
     EvalFSM();
-    // Serial.println("CB_EvalFSM");
   });
 }
 
@@ -372,99 +361,7 @@ void CB_AutoZeroAlt(void *) {
 
 void CB_ConstructData(void *) {
   hal::rtos::interval_loop(RA_INTERVAL_CONSTRUCT, [&]() -> void {
-    sd_buf = "";
-    csv_stream_lf(sd_buf)
-      << "DDL"
-      << packet_count
-      << data.timestamp_epoch
-      << millis()
-      << state_string(fsm.state())
-
-      << 1043          // TEAM_ID
-      << data.utc      // MISSION_TIME
-      << packet_count  // PACKET_COUNT
-      << data.mode     // MODE
-
-      // 5–6
-      << state_string(fsm.state())                // STATE
-      << String(data.altimeter[0].altitude_m, 1)  // ALTITUDE (m, 0.1)
-
-      // 7–11
-      << data.altimeter[0].temperature   // TEMPERATURE (°C, 0.1)
-      << data.altimeter[0].pressure_hpa  // PRESSURE (kPa, 0.1)
-      << data.batt_volt                  // VOLTAGE (V, 0.1)
-      << data.batt_curr                  // CURRENT (A, 0.01)
-
-      << 0.f << 0.f << 0.f
-      << 0.f << 0.f << 0.f
-
-      // 18–22 GPS
-      << data.utc                   // GPS_TIME
-      << data.altitude_msl          // GPS_ALTITUDE (m, 0.1)
-      << String(data.latitude, 4)   // GPS_LATITUDE
-      << String(data.longitude, 4)  // GPS_LONGITUDE
-      << data.siv                   // GPS_SATS
-
-      << data.cmd_echo  // CMD_ECHO
-
-      << data.heading
-
-      << data.roll
-      << data.pitch
-      << data.yaw
-
-      << data.tof
-      << data.deploy
-
-      << alt_agl
-      << alt_ref
-      << apogee_raw
-
-      << pos_a  // Servo A
-      << ReadCPUTemp();
-
-    tx_buf = "";
-    csv_stream_lf(tx_buf)
-      << 1043          // TEAM_ID
-      << data.utc      // MISSION_TIME
-      << packet_count  // PACKET_COUNT
-      << data.mode     // MODE
-
-      // 5–6
-      << state_string(fsm.state())  // STATE
-      // << String(data.altimeter[0].altitude_m, 1)  // ALTITUDE (m, 0.1)
-      << String(alt_agl, 1)
-
-      // 7–11
-      << String(data.altimeter[0].temperature, 1)          // TEMPERATURE (°C, 0.1)
-      << String(data.altimeter[0].pressure_hpa / 10.F, 1)  // PRESSURE (kPa, 0.1)
-      << String(data.batt_volt, 1)                         // VOLTAGE (V, 0.1)
-      << data.batt_curr                                    // CURRENT (A, 0.01)
-
-      << 0.f << 0.f << 0.f
-      << 0.f << 0.f << 0.f
-
-      // 12–14 Gyro
-      // << data.imu[0].gyr_x // GYRO_R
-      // << data.imu[0].gyr_y  // GYRO_P
-      // << data.imu[0].gyr_z  // GYRO_Y
-
-      // // 15–17 Accel
-      // << data.imu[0].acc_x  // ACCEL_R
-      // << data.imu[0].acc_y  // ACCEL_P
-      // << data.imu[0].acc_z  // ACCEL_Y
-
-      // 18–22 GPS
-      << data.utc                      // GPS_TIME
-      << String(data.altitude_msl, 1)  // GPS_ALTITUDE (m, 0.1)
-      << String(data.latitude, 4)      // GPS_LATITUDE
-      << String(data.longitude, 4)     // GPS_LONGITUDE
-      << data.siv                      // GPS_SATS
-
-      << data.cmd_echo  // CMD_ECHO
-
-      << data.yaw;
-    // Serial.println("CB_ConstructData");
+    ConstructString();
   });
 }
 
@@ -494,6 +391,13 @@ void CB_Transmit(void *) {
         packet_count++;
       });
     }
+  });
+}
+
+void CB_Control(void *) {
+  hal::rtos::interval_loop(RA_INTERVAL_Controlling, [&]() -> void {
+    GPSCoordinate current = {data.latitude, data.longitude};
+    servo_target_angles = guidance_update(current, target, alt_agl, data.velocity_n, data.velocity_e, data.yaw);
   });
 }
 
@@ -551,14 +455,14 @@ void CB_NeoPixelBlink(void *) {
 void UserThreads() {
   hal::rtos::scheduler.create(CB_EvalFSM, {.name = "CB_EvalFSM", .stack_size = 4096, .priority = osPriorityRealtime});
 
-  // hal::rtos::scheduler.create(CB_ReadIMU, {.name = "CB_ReadIMU", .stack_size = 8192, .priority = osPriorityHigh});
+  hal::rtos::scheduler.create(CB_ReadIMU, {.name = "CB_ReadIMU", .stack_size = 8192, .priority = osPriorityHigh});
   hal::rtos::scheduler.create(CB_ReadAltimeter, {.name = "CB_ReadAltimeter", .stack_size = 8192, .priority = osPriorityHigh});
 
-  hal::rtos::scheduler.create(CB_ReadI2C, {.name = "CB_ReadI2C", .stack_size = 8192, .priority = osPriorityHigh});
-  // hal::rtos::scheduler.create(CB_ReadGNSS, {.name = "CB_ReadGNSS", .stack_size = 4096, .priority = osPriorityHigh});
-  // hal::rtos::scheduler.create(CB_ReadINA, {.name = "CB_ReadINA", .stack_size = 4096, .priority = osPriorityHigh});
-  // hal::rtos::scheduler.create(CB_ReadMAG, {.name = "CB_ReadMAG", .stack_size = 4096, .priority = osPriorityHigh});
-  // hal::rtos::scheduler.create(CB_ReadTOF, {.name = "CB_ReadTOF", .stack_size = 4096, .priority = osPriorityHigh});
+  // hal::rtos::scheduler.create(CB_ReadI2C, {.name = "CB_ReadI2C", .stack_size = 8192, .priority = osPriorityHigh});
+  hal::rtos::scheduler.create(CB_ReadGNSS, {.name = "CB_ReadGNSS", .stack_size = 4096, .priority = osPriorityHigh});
+  hal::rtos::scheduler.create(CB_ReadINA, {.name = "CB_ReadINA", .stack_size = 4096, .priority = osPriorityHigh});
+  hal::rtos::scheduler.create(CB_ReadMAG, {.name = "CB_ReadMAG", .stack_size = 8192, .priority = osPriorityHigh});
+  hal::rtos::scheduler.create(CB_ReadTOF, {.name = "CB_ReadTOF", .stack_size = 4096, .priority = osPriorityHigh});
 
   // if constexpr (RA_RETAIN_DEPLOYMENT_ENABLED)
   //   hal::rtos::scheduler.create(CB_RetainDeployment, {.name = "CB_RetainDeployment", .stack_size = 4096, .priority = osPriorityHigh});
@@ -568,8 +472,8 @@ void UserThreads() {
 
   hal::rtos::scheduler.create(CB_ConstructData, {.name = "CB_ConstructData", .stack_size = 4096, .priority = osPriorityBelowNormal});
 
-  hal::rtos::scheduler.create(CB_SDLogger, {.name = "CB_SDLogger", .stack_size = 16384, .priority = osPriorityNormal});
-  hal::rtos::scheduler.create(CB_SDSave, {.name = "CB_SDSave", .stack_size = 8192, .priority = osPriorityNormal});
+  // hal::rtos::scheduler.create(CB_SDLogger, {.name = "CB_SDLogger", .stack_size = 16384, .priority = osPriorityNormal});
+  // hal::rtos::scheduler.create(CB_SDSave, {.name = "CB_SDSave", .stack_size = 8192, .priority = osPriorityNormal});
 
   hal::rtos::scheduler.create(CB_Transmit, {.name = "CB_Transmit", .stack_size = 8192, .priority = osPriorityNormal});
   hal::rtos::scheduler.create(CB_ReceiveCommand, {.name = "CB_ReceiveCommand", .stack_size = 8192, .priority = osPriorityNormal});
@@ -611,8 +515,18 @@ void setup() {
 
   /* BEGIN FILTERS SETUP */
   filter_alt.F = vdt.generate_F();
-  // filter_acc.F = vdt.generate_F();
+  filter_acc.F = vdt.generate_F();
   /* END FILTERS SETUP */
+
+  // IMU
+  for (size_t i = 0; i < RA_NUM_IMU; ++i) {
+    if (!imu[i])
+      sensors_health.imu[i] = SensorStatus::SENSOR_NO;
+    else if (imu[i]->begin())
+      sensors_health.imu[i] = SensorStatus::SENSOR_OK;
+    else
+      sensors_health.imu[i] = SensorStatus::SENSOR_ERR;
+  }
 
   // Altimeter
   for (size_t i = 0; i < RA_NUM_ALTIMETER; ++i) {
@@ -623,6 +537,8 @@ void setup() {
     else
       sensors_health.altimeter[i] = SensorStatus::SENSOR_ERR;
   }
+
+
   /* END SENSORS SETUP */
 
   //ZeroALT
@@ -680,23 +596,25 @@ void EvalFSM() {
     case UserState::LAUNCH_PAD: {
       // !!!! Next: DETECT launch !!!!
       if (fsm.on_enter()) {  // Run once
-        // sampler.reset();
-        // sampler.set_capacity(RA_LAUNCH_SAMPLES, /*recount*/ false);
-        // sampler.set_threshold(RA_LAUNCH_ACC, /*recount*/ false);
+        sampler.reset();
+        sampler.set_capacity(RA_LAUNCH_SAMPLES, /*recount*/ false);
+        sampler.set_threshold(RA_LAUNCH_ACC, /*recount*/ false);
 
         sampler_sec.reset();
         sampler_sec.set_capacity(RA_LAUNCH_SAMPLES, /*recount*/ false);
         sampler_sec.set_threshold(RA_LAUNCH_ALT, /*recount*/ false);  //Balloon
       }
 
-      // sampler.add_sample(acc);  // Use raw acceleration, unfiltered
-      // sampler.add_sample(filter_acc.kf.state());  // Use filtered acceleration
+      sampler.add_sample(acc);                    // Use raw acceleration, unfiltered
+      sampler.add_sample(filter_acc.kf.state());  // Use filtered acceleration
 
       sampler_sec.add_sample(alt_agl);  // Use filtered alt
 
 
       if (sampler.is_sampled() &&
-          sampler.over_by_under<double>() > RA_TRUE_TO_FALSE_RATIO) {
+            sampler.over_by_under<double>() > RA_TRUE_TO_FALSE_RATIO ||
+          sampler_sec.is_sampled() &&
+            sampler_sec.over_by_under<double>() > RA_TRUE_TO_FALSE_RATIO) {
         if constexpr (RA_LED_ENABLED) {
           digitalWrite(USER_GPIO_BUZZER, 0);
         }
@@ -829,13 +747,9 @@ void ReadAltimeter() {
         !altimeter[i]->read())
       continue;
     if (simActivated && simEnabled) {
-      // Serial.println("SIM");
       alt_agl = altitude_msl_from_pressure(simPressure / 100.F, qnh_hpa);
-      // Serial.println(alt_agl);
     } else {
       data.altimeter[i].pressure_hpa = altimeter[i]->pressure_hpa();
-      // Serial.println("REAL");
-      ;
     }
 
     data.altimeter[i].altitude_m  = altimeter[i]->altitude_m();
@@ -869,13 +783,19 @@ void ReadGNSS() {
 void ReadINA() {
   if (pvalid.ina) {
     data.batt_volt = ina.getBusVoltage();
-    data.batt_curr = ina.getCurrent_mA() / 1000;  // A;
+    data.batt_curr = ina.getCurrent();  // A;
   }
 }
 
 void ReadMAG() {
   if (pvalid.bno) {
-    if (bno08x.getSensorEvent(&sensorValue)) {
+    taskENTER_CRITICAL();
+    if (bno086.wasReset()) {
+      Serial.print("sensor was reset ");
+      setReports(reportType, reportIntervalUs);
+    }
+
+    if (bno086.getSensorEvent(&sensorValue)) {
       // in this demo only one report type will be received depending on FAST_MODE define (above)
       switch (sensorValue.sensorId) {
         case SH2_ARVR_STABILIZED_RV:
@@ -885,10 +805,19 @@ void ReadMAG() {
           quaternionToEulerGI(&sensorValue.un.gyroIntegratedRV, &ypr, true);
           break;
       }
+
+      // data.roll  = ypr.roll;
+      // data.pitch = ypr.pitch;
+
+      // Serial.println(ypr.yaw);
+      // Serial.print("  ");
+      // Serial.print(ypr.roll);
+      // Serial.print("  ");
+      // Serial.println(ypr.pitch);
     }
-    data.roll  = ypr.roll;
-    data.pitch = ypr.pitch;
-    data.yaw   = ypr.yaw;
+    data.yaw = ypr.yaw;
+    Serial.println(data.yaw);
+    taskEXIT_CRITICAL();
   }
 }
 
@@ -909,7 +838,7 @@ void ActivateDeployment(const size_t index) {
   switch (index) {
     case 0: {  // Drogue/First Deployment
       pos_a = RA_SERVO_A_RELEASE;
-      servo_a.write(pos_a);
+      // servo_a.write(pos_a);
       break;
     }
 
@@ -1034,4 +963,99 @@ void HandleCommand(const String &rx) {
     ++last_nack;
     --last_ack;
   }
+}
+
+void ConstructString() {
+  sd_buf = "";
+  csv_stream_lf(sd_buf)
+    << "DDL"
+    << packet_count
+    << data.timestamp_epoch
+    << millis()
+    << state_string(fsm.state())
+
+    << 1043          // TEAM_ID
+    << data.utc      // MISSION_TIME
+    << packet_count  // PACKET_COUNT
+    << data.mode     // MODE
+
+    // 5–6
+    << state_string(fsm.state())                // STATE
+    << String(data.altimeter[0].altitude_m, 1)  // ALTITUDE (m, 0.1)
+
+    // 7–11
+    << data.altimeter[0].temperature   // TEMPERATURE (°C, 0.1)
+    << data.altimeter[0].pressure_hpa  // PRESSURE (kPa, 0.1)
+    << data.batt_volt                  // VOLTAGE (V, 0.1)
+    << data.batt_curr                  // CURRENT (A, 0.01)
+
+    << 0.f << 0.f << 0.f
+    << 0.f << 0.f << 0.f
+
+    // 18–22 GPS
+    << data.utc                   // GPS_TIME
+    << data.altitude_msl          // GPS_ALTITUDE (m, 0.1)
+    << String(data.latitude, 4)   // GPS_LATITUDE
+    << String(data.longitude, 4)  // GPS_LONGITUDE
+    << data.siv                   // GPS_SATS
+
+    << data.cmd_echo  // CMD_ECHO
+
+    << data.heading
+
+    << data.roll
+    << data.pitch
+    << data.yaw
+
+    << data.tof
+    << data.deploy
+
+    << alt_agl
+    << alt_ref
+    << apogee_raw
+
+    << pos_a  // Servo A
+    << ReadCPUTemp();
+
+  tx_buf = "";
+  csv_stream_lf(tx_buf)
+    << 1043          // TEAM_ID
+    << data.utc      // MISSION_TIME
+    << packet_count  // PACKET_COUNT
+    << data.mode     // MODE
+
+    // 5–6
+    << state_string(fsm.state())  // STATE
+    // << String(data.altimeter[0].altitude_m, 1)  // ALTITUDE (m, 0.1)
+    << String(alt_agl, 1)
+
+    // 7–11
+    << String(data.altimeter[0].temperature, 1)          // TEMPERATURE (°C, 0.1)
+    << String(data.altimeter[0].pressure_hpa / 10.F, 1)  // PRESSURE (kPa, 0.1)
+    << String(data.batt_volt, 1)                         // VOLTAGE (V, 0.1)
+    << data.batt_curr                                    // CURRENT (A, 0.01)
+
+    // << 0.f << 0.f << 0.f
+    // << 0.f << 0.f << 0.f
+
+    // 12–14 Gyro
+    << data.imu[0].gyr_x  // GYRO_R
+    << data.imu[0].gyr_y  // GYRO_P
+    << data.imu[0].gyr_z  // GYRO_Y
+
+    // 15–17 Accel
+    << data.imu[0].acc_x  // ACCEL_R
+    << data.imu[0].acc_y  // ACCEL_P
+    << data.imu[0].acc_z  // ACCEL_Y
+
+    // 18–22 GPS
+    << data.utc                      // GPS_TIME
+    << String(data.altitude_msl, 1)  // GPS_ALTITUDE (m, 0.1)
+    << String(data.latitude, 4)      // GPS_LATITUDE
+    << String(data.longitude, 4)     // GPS_LONGITUDE
+    << data.siv                      // GPS_SATS
+
+    << data.cmd_echo  // CMD_ECHO
+
+    << data.yaw;
 }

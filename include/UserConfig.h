@@ -11,7 +11,7 @@ constexpr const char *RA_FILE_NAME = "DDL_LOGGER_";
 constexpr const char *RA_FILE_EXT = "CSV";
 
 // Number of IMU sensors
-constexpr size_t RA_NUM_IMU = 0;
+constexpr size_t RA_NUM_IMU = 1;
   
 // Number of Altimeter sensors
 constexpr size_t RA_NUM_ALTIMETER = 1;
@@ -40,10 +40,16 @@ constexpr uint32_t UBLOX_CUSTOM_MAX_WAIT = 250ul;
 constexpr uint32_t RA_INTERVAL_IMU_READING = 5ul;  // ms
 
 // Altimeter Reading
-constexpr uint32_t RA_INTERVAL_ALTIMETER_READING = 100ul;  // ms
+constexpr uint32_t RA_INTERVAL_ALTIMETER_READING = 50ul;  // ms
 
 // GNSS Reading
-constexpr uint32_t RA_INTERVAL_GNSS_READING = 200ul;  // ms
+constexpr uint32_t RA_INTERVAL_GNSS_READING = 56ul;  // ms
+
+// GNSS Reading
+constexpr uint32_t RA_INTERVAL_MAG_READING = 1ul;  // ms
+
+// GNSS Reading
+constexpr uint32_t RA_INTERVAL_TOF_READING = 20ul;  // ms
 
 // GNSS Reading
 constexpr uint32_t RA_INTERVAL_SENSORS_READING = 500ul;  // ms
@@ -56,6 +62,9 @@ constexpr uint32_t RA_JITTER_TOLERANCE_FSM_EVAL = 1ul;  // ms
 
 // Data Construct
 constexpr uint32_t RA_INTERVAL_CONSTRUCT = 100ul;  // ms
+
+// Data Construct
+constexpr uint32_t RA_INTERVAL_Controlling = 20ul;  // ms
 
 // Altitude Auto-Zero
 constexpr uint32_t RA_INTERVAL_AUTOZERO = 50ul;  // ms

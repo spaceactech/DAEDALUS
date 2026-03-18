@@ -46,7 +46,7 @@ constexpr uint8_t SERVO3_ID = 3;
 // ---------------- SERVO DRIVER ----------------
 // PID gains (tune later)
 constexpr double KP = 12.0;
-constexpr double KI = 0.01;
+constexpr double KI = 0;
 constexpr double KD = 0.15;
 
 STSServoDriver servo;
