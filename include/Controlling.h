@@ -7,7 +7,7 @@
 #include <lib_xcore>
 #include <xcore/math_module>
 #include <xcore/dispatcher>
-#include <STSServoDriver.h>
+#include <SCServo.h>
 
 // ---------------- VECTOR ALIAS ----------------
 
@@ -38,10 +38,10 @@ constexpr double ENC_TO_DEG = 360.0 / 4096.0;  // **Change
 
 // ---------------- SERVO IDS ----------------
 
-constexpr uint8_t SERVO1_ID = 1;
-constexpr uint8_t SERVO2_ID = 2;
-constexpr uint8_t SERVO3_ID = 3;
-
+uint8_t servo_ids[] = {1, 2, 3};
+uint8_t SERVO1_ID   = 0;
+uint8_t SERVO2_ID   = 1;
+uint8_t SERVO3_ID   = 2;
 
 // ---------------- SERVO DRIVER ----------------
 // PID gains (tune later)
@@ -49,7 +49,10 @@ constexpr double KP = 12.0;
 constexpr double KI = 0;
 constexpr double KD = 0.15;
 
-STSServoDriver servo;
+SMS_STS sms_sts;
+
+uint8_t rxPacket[4];
+byte    servo_accels    = 255;
 
 // ---------------- PID CONTROLLERS ----------------
 
@@ -61,9 +64,9 @@ xcore::pid_controller_t<uint32_t> pid3(KP, KI, KD);
 // ---------------- PID INIT ----------------
 
 void init_pid() {
-  pid1.update_limits(-3500, 3500);
-  pid2.update_limits(-3500, 3500);
-  pid3.update_limits(-3500, 3500);
+  pid1.update_limits(-10000, 10000);
+  pid2.update_limits(-10000, 10000);
+  pid3.update_limits(-10000, 10000);
 
   pid1.update_dt(0.05);
   pid2.update_dt(0.02);
@@ -340,12 +343,15 @@ numeric_vector<3> control_to_servo_angle(
 // =====================================================
 
 double read_angle(uint8_t id, EncoderTracker &tracker) {
-  int pos = servo.getCurrentPosition(id);
+  sms_sts.syncReadPacketTx(servo_ids, sizeof(servo_ids), SMS_STS_PRESENT_POSITION_L, sizeof(rxPacket));
+  sms_sts.syncReadPacketRx(servo_ids[id], rxPacket);
+  int pos = sms_sts.syncReadRxPacketToWrod(15);
+
+  // Serial.println(pos);
 
   if (pos < 0)
     return 0;
 
-  // Serial.println(pos);
 
   return tracker.update(pos);
 }
@@ -360,7 +366,7 @@ int compute_speed(
   double                             current_angle) {
   double speed = pid.update(target_angle, current_angle, 0.02);
 
-  speed = constrain(speed, -3500, 3500);
+  speed = constrain(speed, -10000, 10000);
 
   return (int) speed;
 }
@@ -370,7 +376,7 @@ int compute_speed(
 // =====================================================
 
 void write_speed(uint8_t id, int speed) {
-  servo.setTargetVelocity(id, speed);
+  sms_sts.WriteSpe(id, speed, servo_accels);
   delay(10);
 }
 
@@ -451,7 +457,6 @@ void servo_pid_update(const numeric_vector<3> &target_angles) {
   double angle3 = read_angle(SERVO3_ID, enc3);
 
   // ---- Compute PID speeds ----
-
   int speed1 = compute_speed(pid1, target_angles[0], angle1);
   int speed2 = compute_speed(pid2, target_angles[1], angle2);
   int speed3 = compute_speed(pid3, target_angles[2], angle3);

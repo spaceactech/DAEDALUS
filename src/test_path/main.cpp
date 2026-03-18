@@ -6,9 +6,7 @@
 #include <xcore/math_module>
 #include "UserPins.h"
 
-HardwareSerial ServoSerial(USER_GPIO_XBEE_RX, USER_GPIO_XBEE_TX);
-
-const int SERVO_DIR_PIN = 0;
+HardwareSerial ServoSerial(USER_GPIO_Half);
 
 // Timer start
 unsigned long startTime;
@@ -26,22 +24,21 @@ void setup() {
 
   startTime = millis();  // start timer
 
-  ServoSerial.begin(1000000);
+  ServoSerial.begin(1'000'000);
+  sms_sts.pSerial = &ServoSerial;
+  delay(1000);
 
   // Initialize servo driver
-  if (!servo.init(SERVO_DIR_PIN, &ServoSerial)) {
-    Serial.println("Servo init failed!");
-    while (1);
+  sms_sts.syncReadBegin(sizeof(servo_ids), sizeof(rxPacket), 5);
+  for (size_t i = 0; i < sizeof(servo_ids); ++i) {
+    sms_sts.WheelMode(servo_ids[i]);
   }
 
   Serial.println("Servo initialized");
 
-  servo.writeRegister(SERVO1_ID, STSRegisters::OPERATION_MODE, 1);
-  delay(1000);
 }
 
 void loop() {
-  return;
   // -------------------------------
   // Example sensor inputs
   // -------------------------------
@@ -78,12 +75,15 @@ void loop() {
         0);
 
     // Read servo angle
-    angle1 = read_angle(SERVO1_ID, enc1);
+    angle1 = read_angle(0, enc1);
 
     // PID speed control
     int speed1 = compute_speed(pid1, servo_target_angles[0], angle1);
 
-    write_speed(SERVO1_ID, speed1);
+    Serial.print("Control: ");
+    Serial.println(speed1);
+    sms_sts.WriteSpe(0, speed1, servo_accels);
+    // write_speed(0, speed1);
   });
 
   // ---------------------------------------------------
