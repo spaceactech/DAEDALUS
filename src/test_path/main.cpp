@@ -26,13 +26,13 @@ void setup() {
   startTime = millis();  // start timer
 
   ServoSerial.begin(1'000'000);
-  sms_sts.pSerial = &ServoSerial;
+  controller.driver.sms_sts.pSerial = &ServoSerial;
   delay(1000);
 
   // Initialize servo driver
-  sms_sts.syncReadBegin(sizeof(servo_ids), sizeof(rxPacket), 5);
-  for (size_t i = 0; i < sizeof(servo_ids); ++i) {
-    sms_sts.WheelMode(servo_ids[i]);
+  controller.driver.sms_sts.syncReadBegin(sizeof(ServoDriver::IDS), sizeof(controller.driver.rxPacket), 5);
+  for (size_t i = 0; i < sizeof(ServoDriver::IDS); ++i) {
+    controller.driver.sms_sts.WheelMode(ServoDriver::IDS[i]);
   }
 
   Serial.println("Servo initialized");
@@ -66,7 +66,7 @@ void loop() {
 
   delay([&]() {
     servo_target_angles =
-      guidance_update(
+      controller.guidance.update(
         current,
         target,
         altitude,
@@ -75,15 +75,14 @@ void loop() {
         0);
 
     // Read servo angle
-    angle1 = read_angle(0, enc1);
+    angle1 = controller.driver.read_angle(0);
 
     // PID speed control
-    const int16_t speed1 = compute_speed(pid1, servo_target_angles[0], angle1);
+    const int16_t speed1 = Controller::compute_speed(controller.pid_controllers[0], servo_target_angles[0], angle1);
 
     Serial.print("Control: ");
     Serial.println(speed1);
-    sms_sts.WriteSpe(0, speed1, servo_accels);
-    // write_speed(0, speed1);
+    controller.driver.write_speed(0, speed1);
   });
 
   // ---------------------------------------------------

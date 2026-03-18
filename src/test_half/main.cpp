@@ -4,7 +4,7 @@
 
 SMS_STS        sms_sts;
 HardwareSerial HalfSerial(USER_GPIO_Half);
-uint8_t        servo_ids[]     = {1, 2, 3};
+uint8_t        SERVO_IDS[]     = {1, 2, 3};
 byte           servo_accels[2] = {50, 50};
 uint8_t        rxPacket[4];
 
@@ -21,24 +21,24 @@ void setup() {
   // sms_sts.writeByte(1, SMS_STS_ID, 3);  //ID
   // sms_sts.LockEprom(3);                 //关闭EPROM保存功能
 
-  sms_sts.syncReadBegin(sizeof(servo_ids), sizeof(rxPacket), 5);
-  for (size_t i = 0; i < sizeof(servo_ids); ++i) {
-    sms_sts.WheelMode(servo_ids[i]);
-    sms_sts.WriteSpe(servo_ids[i], 10000, 255);
+  sms_sts.syncReadBegin(sizeof(SERVO_IDS), sizeof(rxPacket), 5);
+  for (size_t i = 0; i < sizeof(SERVO_IDS); ++i) {
+    sms_sts.WheelMode(SERVO_IDS[i]);
+    sms_sts.WriteSpe(SERVO_IDS[i], 10000, 255);
   }
 }
 
 void loop() {
-  sms_sts.syncReadPacketTx  (servo_ids, sizeof(servo_ids), SMS_STS_PRESENT_POSITION_L, sizeof(rxPacket));
+  sms_sts.syncReadPacketTx  (SERVO_IDS, sizeof(SERVO_IDS), SMS_STS_PRESENT_POSITION_L, sizeof(rxPacket));
 
-  for (size_t i = 0; i < sizeof(servo_ids); ++i) {
-    sms_sts.syncReadPacketRx(servo_ids[i], rxPacket);
+  for (size_t i = 0; i < sizeof(SERVO_IDS); ++i) {
+    sms_sts.syncReadPacketRx(SERVO_IDS[i], rxPacket);
 
     Position = sms_sts.syncReadRxPacketToWrod(15);
     Speed    = sms_sts.syncReadRxPacketToWrod(15);
 
     Serial.print("ID:");
-    Serial.println(servo_ids[i]);
+    Serial.println(SERVO_IDS[i]);
     Serial.print("Position:");
     Serial.println(Position);
     Serial.print("Speed:");
