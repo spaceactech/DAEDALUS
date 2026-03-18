@@ -1,0 +1,3 @@
+[submodule "lib/FTServo"]
+	path = lib/FTServo
+	url = https://github.com/spaceactech/FTServo_Arduino.git
