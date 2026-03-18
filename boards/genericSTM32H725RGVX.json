@@ -1,0 +1,40 @@
+{
+  "build": {
+    "core": "stm32",
+    "cpu": "cortex-m7",
+    "extra_flags": "-DSTM32H7 -DSTM32H7xx -DSTM32H725xx",
+    "f_cpu": "550000000L",
+    "mcu": "stm32h725rgvx",
+    "product_line": "STM32H725xx",
+    "variant": "STM32H7xx/H725R(E-G)V_H735RGV"
+  },
+  "debug": {
+    "default_tools": [
+      "stlink"
+    ],
+    "jlink_device": "STM32H725RGV",
+    "onboard_tools": [
+      "stlink"
+    ],
+    "openocd_target": "stm32h7x"
+  },
+  "frameworks": [
+    "arduino",
+    "stm32cube"
+  ],
+  "name": "STM32H725",
+  "upload": {
+    "maximum_ram_size": 577536,
+    "maximum_size": 1048576,
+    "protocol": "stlink",
+    "protocols": [
+      "stlink",
+      "jlink",
+      "cmsis-dap",
+      "blackmagic",
+      "mbed"
+    ]
+  },
+  "url": "https://www.st.com/en/microcontrollers-microprocessors/stm32h7-series.html",
+  "vendor": "ST"
+}

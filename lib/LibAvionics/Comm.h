@@ -1,0 +1,6 @@
+#ifndef ROCKET_AVIONICS_TEMPLATE_COMM_H
+#define ROCKET_AVIONICS_TEMPLATE_COMM_H
+
+#include <./Arduino_Extended.h>
+
+#endif  //ROCKET_AVIONICS_TEMPLATE_COMM_H
