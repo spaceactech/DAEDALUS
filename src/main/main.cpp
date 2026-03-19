@@ -114,6 +114,8 @@ struct DataMemory {
 
 String sd_buf;
 String tx_buf;
+
+GPSCoordinate current_location;
 /* END DATA MEMORY */
 
 /* EEPROM */
@@ -205,7 +207,7 @@ void UserSetupActuator() {
 
 void UserSetupCDC() {
   if constexpr (RA_USB_DEBUG_ENABLED) {
-    Serial.begin(115200);
+    Serial.begin(460800);
     while (!Serial)
       delay(1);
   }
@@ -316,8 +318,10 @@ void CB_ReadAltimeter(void *) {
 void CB_ReadGNSS(void *) {
   hal::rtos::interval_loop(RA_INTERVAL_GNSS_READING, [&]() -> void {
     mtx_i2c.exec(ReadGNSS);
+    current_location = {data.latitude, data.longitude};
   });
 }
+
 
 void CB_ReadINA(void *) {
   hal::rtos::interval_loop(RA_INTERVAL_SENSORS_READING, [&]() -> void {
@@ -406,10 +410,8 @@ void CB_Transmit(void *) {
 
 void CB_Control(void *) {
   hal::rtos::interval_loop(RA_INTERVAL_Controlling, [&]() -> void {
-    GPSCoordinate current = {data.latitude, data.longitude};
-    servo_target_angles   = controller.guidance.update(current, target, alt_agl, data.velocity_n, data.velocity_e, data.yaw);
+    servo_target_angles = controller.guidance.update(current_location, target_location, alt_agl, data.velocity_n, data.velocity_e, data.yaw);
     controller.servo_pid_update(servo_target_angles);
-    // Serial.println("Control");
   });
 }
 
@@ -466,7 +468,7 @@ void CB_NeoPixelBlink(void *) {
 
 void UserThreads() {
   hal::rtos::scheduler.create(CB_EvalFSM, {.name = "CB_EvalFSM", .stack_size = 4096, .priority = osPriorityRealtime});
-  hal::rtos::scheduler.create(CB_Control, {.name = "CB_Control", .stack_size = 4096, .priority = osPriorityRealtime});
+  // hal::rtos::scheduler.create(CB_Control, {.name = "CB_Control", .stack_size = 8192, .priority = osPriorityRealtime});
 
   hal::rtos::scheduler.create(CB_ReadIMU, {.name = "CB_ReadIMU", .stack_size = 8192, .priority = osPriorityHigh});
   hal::rtos::scheduler.create(CB_ReadAltimeter, {.name = "CB_ReadAltimeter", .stack_size = 8192, .priority = osPriorityHigh});
@@ -491,7 +493,7 @@ void UserThreads() {
   hal::rtos::scheduler.create(CB_Transmit, {.name = "CB_Transmit", .stack_size = 8192, .priority = osPriorityNormal});
   hal::rtos::scheduler.create(CB_ReceiveCommand, {.name = "CB_ReceiveCommand", .stack_size = 8192, .priority = osPriorityNormal});
 
-  hal::rtos::scheduler.create(CB_NeoPixelBlink, {.name = "CB_NeoPixelBlink", .stack_size = 1028, .priority = osPriorityBelowNormal});
+  hal::rtos::scheduler.create(CB_NeoPixelBlink, {.name = "CB_NeoPixelBlink", .stack_size = 2048, .priority = osPriorityBelowNormal});
 
   if constexpr (RA_USB_DEBUG_ENABLED)
     hal::rtos::scheduler.create(CB_DebugLogger, {.name = "CB_DebugLogger", .stack_size = 4096, .priority = osPriorityBelowNormal});

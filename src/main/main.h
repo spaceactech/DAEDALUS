@@ -5,10 +5,10 @@
 #include <math.h>
 #include "Controlling.h"
 
-GPSCoordinate target  = {13.723186, 100.515473};
+GPSCoordinate target_location  = {13.723186, 100.515473};
 
 /* Telemetry control */
-bool telemetry_enabled = false; // need to false
+bool telemetry_enabled = FLASH_FLAG_PGSERR; // need to false
 
 /* Simulation mode */
 bool     simEnabled   = false;
