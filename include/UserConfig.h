@@ -17,7 +17,7 @@ constexpr size_t RA_NUM_IMU = 1;
 constexpr size_t RA_NUM_ALTIMETER = 1;
 
 // Number of GNSS sensors
-constexpr size_t RA_NUM_GNSS = 1;
+constexpr size_t RA_NUM_GNSS = 0;
 
 // LEDs
 constexpr bool RA_LED_ENABLED = true;
@@ -26,7 +26,7 @@ constexpr bool RA_LED_ENABLED = true;
 constexpr bool RA_USB_DEBUG_ENABLED = true;
 
 // Retain Deployment
-constexpr bool RA_RETAIN_DEPLOYMENT_ENABLED = false;
+constexpr bool RA_RETAIN_DEPLOYMENT_ENABLED = true;
 
 // Auto-Zero Altitude
 constexpr bool RA_AUTO_ZERO_ALT_ENABLED = false;
@@ -84,6 +84,10 @@ constexpr int RA_SERVO_CEN = (RA_SERVO_MIN + RA_SERVO_MAX) / 2;  // us PWM
 constexpr float RA_SERVO_A_RELEASE = 0;    // deg
 constexpr float RA_SERVO_A_LOCK    = 180;  // deg
 
+constexpr float RA_SERVO_B_RELEASE = 0;    // deg
+constexpr float RA_SERVO_B_LOCK    = 180;  // deg
+
+
 /* SAMPLER SETTINGS */
 
 // True to false ratio for comparator
@@ -106,9 +110,6 @@ constexpr uint32_t RA_TIME_TO_APOGEE_MAX = 44 * 60 * 1000ul;  // ms
 // Launch acceleration: acc. threshold (GT)
 constexpr double RA_LAUNCH_ACC = 10.0;  // 9.81 m/s^2 (g)
 constexpr double RA_LAUNCH_ALT = 50.0;   // m
-
-// Launch acceleration: acc. threshold (GT)
-constexpr double RA_LAUNCH_VEL = 10.0;  // 9.81 m/s^2 (g)
 
 // Launch acceleration detection period
 constexpr uint32_t RA_LAUNCH_TON     = 200ul;  // ms
@@ -135,8 +136,8 @@ constexpr uint32_t RA_APOGEE_SAMPLES = RA_APOGEE_TON / RA_INTERVAL_FSM_EVAL;
 constexpr double RA_DROGUE_VEL = 17.5;  // m/s
 
 // Main Deployment Event Altitude: altitude threshold (LT)
-constexpr double RA_MAIN_ALT_RAW = 2.5;  // m
-constexpr double RA_INS_ALT_RAW = 4;  // m
+constexpr double RA_MAIN_ALT_RAW = 534.4;  // m Apogee * 0.8
+constexpr double RA_INS_ALT_RAW = 2.0;  // m
 
 // Safeguard overspeed threshold to main deployment
 constexpr double RA_MAIN_OVERSPEED_VEL = RA_DROGUE_VEL * 1.5;
@@ -164,12 +165,13 @@ constexpr uint32_t RA_INS_SAMPLES = RA_MAIN_TON / RA_INTERVAL_FSM_EVAL;
 
 // Main Deployment Event Triggering Delay Compensation Multiplier
 constexpr double RA_MAIN_COMPENSATION_MULT = 2.0;
+constexpr double RA_INS_COMPENSATION_MULT = 2.0;
 
 // Main Deployment Event Triggering Delay Compensation Value
 constexpr double RA_MAIN_ALT_COMPENSATED = RA_MAIN_ALT_RAW + RA_MAIN_COMPENSATION_MULT * RA_DROGUE_VEL * (static_cast<double>(RA_MAIN_TON) / 1000.);  // m
 
 // INS Deployment Event Triggering Delay Compensation Value
-constexpr double RA_INS_ALT_COMPENSATED = RA_INS_ALT_RAW + RA_MAIN_COMPENSATION_MULT * RA_DROGUE_VEL * (static_cast<double>(RA_MAIN_TON) / 1000.);  // m
+constexpr double RA_INS_ALT_COMPENSATED = RA_INS_ALT_RAW + RA_INS_COMPENSATION_MULT * RA_DROGUE_VEL * (static_cast<double>(RA_MAIN_TON) / 1000.);  // m
 
 // Velocity at Landed State: vel. threshold (LT)
 constexpr double RA_LANDED_VEL = 0.5;  // m/s

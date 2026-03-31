@@ -12,15 +12,15 @@
 #  include "hal_rtos.h"
 #endif
 
+// Hardware
 #include <STM32SD.h>
-#include <STM32Servo.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_LIS3MDL.h>
 #include <Adafruit_NeoPixel.h>
 #include <Adafruit_BNO08x.h>
 #include <INA236.h>
 #include "SparkFun_VL53L1X.h"
-/* END INCLUDE SYSTEM LIBRARIES */
+#include <Servo.h>
 
 /* BEGIN INCLUDE USER'S IMPLEMENTATIONS */
 #include "UserConfig.h"
@@ -33,9 +33,6 @@
 /* BEGIN INCLUDE MAIN */
 #include "./main.h"
 /* END INCLUDE MAIN */
-
-/* BEGIN USER PRIVATE TYPEDEFS, INCLUDES AND MACROS */
-/* END USER PRIVATE TYPEDEFS, INCLUDES AND MACROS */
 
 /* BEGIN SENSOR INSTANCES */
 SPIClass spi1(USER_GPIO_SPI1_MOSI, USER_GPIO_SPI1_MISO, USER_GPIO_SPI1_SCK);
@@ -51,14 +48,15 @@ SFEVL53L1X        tof(i2c4);
 
 Adafruit_NeoPixel led(2, USER_GPIO_LED, NEO_GRB + NEO_KHZ800);
 
+Servo servo_a;
+Servo servo_b;
+
 SensorIMU *imu[RA_NUM_IMU] = {
   new IMU_ISM256(spi1, USER_GPIO_ISM256_NSS),  // IMU #1
 };
 SensorAltimeter *altimeter[RA_NUM_ALTIMETER] = {
   new Altimeter_BMP581(USER_GPIO_BMP581_NSS),  // Altimeter #1
 };
-
-numeric_vector<3> servo_target_angles;
 /* END SENSOR INSTANCES */
 
 /* BEGIN SENSOR STATUSES */
@@ -79,49 +77,18 @@ uint32_t packet_count{};
 /* END PERSISTENT STATE */
 
 /* BEGIN DATA MEMORY */
-struct DataMemory {
-  SensorIMU::Data       imu[RA_NUM_IMU];
-  SensorAltimeter::Data altimeter[RA_NUM_ALTIMETER];
-
-  String mode = "F";
-
-  uint32_t timestamp_epoch;
-  uint32_t timestamp_us{};
-
-  char    utc[9] = "00:00:00";
-  uint8_t siv;
-  double  latitude;
-  double  longitude;
-  double  altitude_msl;
-  double  velocity_n;
-  double  velocity_e;
-  uint8_t hh, mm, ss;
-
-  float batt_volt;
-  float batt_curr;
-
-  float tof;
-
-  float yaw;
-  float pitch;
-  float roll;
-  float heading;
-
-  bool   deploy;
-  String cmd_echo = "ECHO";
-
-} data;
+DataMemory data;
 
 String sd_buf;
 String tx_buf;
-
-GPSCoordinate current_location;
 /* END DATA MEMORY */
 
+/* Control*/
+GPSCoordinate     current_location;
+Controller        controller;
+numeric_vector<3> servo_target_angles;
+
 /* EEPROM */
-
-
-Controller controller;
 
 /* BEGIN SD CARD */
 FsUtil fs_sd;
@@ -134,9 +101,8 @@ Filter1T                     filter_alt;
 /* END FILTERS */
 
 /* BEGIN ACTUATORS */
-STM32ServoList servos(TIMER_SERVO);
-float          pos_a = RA_SERVO_A_LOCK;
-float          pos_b = 90;
+float pos_a = RA_SERVO_A_LOCK;
+float pos_b = RA_SERVO_B_LOCK;
 /* END ACTUATORS */
 
 /* BEGIN USER PRIVATE VARIABLES */
@@ -191,18 +157,19 @@ void UserSetupGPIO() {
 }
 
 void UserSetupActuator() {
+  //Paraglider Servo
   ServoSerial.begin(1'000'000);
-  controller.driver.sms_sts.pSerial = &ServoSerial;
-  delay(1000);
+  controller.driver.hlscl.pSerial = &ServoSerial;
 
   // Initialize servo driver
-  controller.driver.sms_sts.syncReadBegin(sizeof(ServoDriver::IDS), sizeof(controller.driver.rxPacket), 5);
+  controller.driver.hlscl.syncReadBegin(sizeof(ServoDriver::IDS), sizeof(controller.driver.rxPacket), 5);
   for (size_t i = 0; i < sizeof(ServoDriver::IDS); ++i) {
-    controller.driver.sms_sts.WheelMode(ServoDriver::IDS[i]);
+    controller.driver.hlscl.WheelMode(ServoDriver::IDS[i]);
   }
-  // servos.attach(USER_GPIO_SERVO_B, RA_SERVO_MIN, RA_SERVO_MAX, RA_SERVO_MAX);
-  // servos[0].write(0);
-  // servos[0].write(180);
+
+  //DEPLOYMENT SERVO
+  servo_a.attach(USER_GPIO_SERVO_A, RA_SERVO_MIN, RA_SERVO_MAX, RA_SERVO_MAX);
+  servo_b.attach(USER_GPIO_SERVO_B, RA_SERVO_MIN, RA_SERVO_MAX, RA_SERVO_MAX);
 }
 
 void UserSetupCDC() {
@@ -290,30 +257,19 @@ void CB_ReadAltimeter(void *) {
     mtx_spi.exec(ReadAltimeter);
 
     // Update KF with measurement
-    if (!simActivated && !simEnabled)
+    if (!simActivated && !simEnabled) {
       filter_alt.kf.update({data.altimeter[0].altitude_m});
 
-    // Update altitude above ground
-    alt_agl = data.altimeter[0].altitude_m - alt_ref;
+      // Update altitude above ground
+      alt_agl = data.altimeter[0].altitude_m - alt_ref;
+    }
 
-    // Update apogee
     if (alt_agl > apogee_raw)
       apogee_raw = alt_agl;
+
     // Serial.println("CB_ReadAltimeter");
   });
 }
-
-// void CB_ReadI2C(void *) {
-//   hal::rtos::interval_loop(500ul, [&]() -> void {
-//     mtx_i2c.exec([&]() -> void {
-//       ReadGNSS();
-//       ReadINA();
-//       ReadMAG();
-//       // ReadTOF();
-//       Serial.println("I2C");
-//     });
-//   });
-// }
 
 void CB_ReadGNSS(void *) {
   hal::rtos::interval_loop(RA_INTERVAL_GNSS_READING, [&]() -> void {
@@ -479,8 +435,8 @@ void UserThreads() {
   hal::rtos::scheduler.create(CB_ReadMAG, {.name = "CB_ReadMAG", .stack_size = 8192, .priority = osPriorityHigh});
   hal::rtos::scheduler.create(CB_ReadTOF, {.name = "CB_ReadTOF", .stack_size = 4096, .priority = osPriorityHigh});
 
-  // if constexpr (RA_RETAIN_DEPLOYMENT_ENABLED)
-  //   hal::rtos::scheduler.create(CB_RetainDeployment, {.name = "CB_RetainDeployment", .stack_size = 4096, .priority = osPriorityHigh});
+  if constexpr (RA_RETAIN_DEPLOYMENT_ENABLED)
+    hal::rtos::scheduler.create(CB_RetainDeployment, {.name = "CB_RetainDeployment", .stack_size = 4096, .priority = osPriorityHigh});
 
   // if constexpr (RA_AUTO_ZERO_ALT_ENABLED)
   //   hal::rtos::scheduler.create(CB_AutoZeroAlt, {.name = "CB_AutoZeroAlt", .stack_size = 4096, .priority = osPriorityHigh});
@@ -564,10 +520,11 @@ void setup() {
 
   Serial.println(status);
   if (!fs_sd.file()) {
-    // Serial.println("SD FILE OPEN FAILED");
+    Serial.println("SD FILE OPEN FAILED");
   }
 
   led.setPixelColor(1, led.Color(0, 0, 255));
+  led.setPixelColor(2, led.Color(0, 0, 255));
   led.show();
 
   /* BEGIN SYSTEM/KERNEL SETUP */
@@ -641,33 +598,33 @@ void EvalFSM() {
     case UserState::ASCENT: {
       // !!!! Next: DETECT apogee !!!!
       if (fsm.on_enter()) {  // Run once
-        // sampler.reset();
-        // sampler.set_capacity(RA_APOGEE_SAMPLES, /*recount*/ false);
-        // sampler.set_threshold(RA_APOGEE_VEL, /*recount*/ false);
+        sampler.reset();
+        sampler.set_capacity(RA_APOGEE_SAMPLES, /*recount*/ false);
+        sampler.set_threshold(RA_APOGEE_VEL, /*recount*/ false);
         state_millis_start = millis();
       }
 
-      // const double vel = filter_alt.kf.state_vector()[1];
-      // sampler.add_sample(std::abs(vel));
+      const double vel = filter_alt.kf.state_vector()[1];
+      sampler.add_sample(std::abs(vel));
       state_millis_elapsed = millis() - state_millis_start;
 
-      if (state_millis_elapsed >= RA_TIME_TO_APOGEE_MAX)
+      if (state_millis_elapsed >= RA_TIME_TO_APOGEE_MIN &&
+          sampler.is_sampled() &&
+          sampler.under_by_over<double>() > RA_TRUE_TO_FALSE_RATIO)
         fsm.transfer(UserState::APOGEE);
-      //     (state_millis_elapsed >= RA_TIME_TO_APOGEE_MIN &&
-      //      sampler.is_sampled() &&
-      //      sampler.under_by_over<double>() > RA_TRUE_TO_FALSE_RATIO))
-
       break;
     }
 
     case UserState::APOGEE: {
-      // <--- Next: activate pyro/servo and always transfer --->
+      // <--- Next: always transfer --->
+      delay(1500);
       fsm.transfer(UserState::DESCENT);
       break;
     }
 
     case UserState::DESCENT: {
       // <--- Next: activate pyro/servo and always transfer --->
+      delay(1500);
       fsm.transfer(UserState::PROBE_REALEASE);
       break;
     }
@@ -678,24 +635,19 @@ void EvalFSM() {
         sampler.reset();
         sampler.set_capacity(RA_MAIN_SAMPLES, /*recount*/ false);
         sampler.set_threshold(RA_MAIN_ALT_COMPENSATED, /*recount*/ false);
-        // sampler_overspeed.reset();
-        // sampler_overspeed.set_threshold(RA_MAIN_OVERSPEED_VEL, /*recount*/ false);
         state_millis_start = millis();
       }
 
       sampler.add_sample(alt_agl);
-      // const double vel = filter_alt.kf.state_vector()[1];
-      // sampler_overspeed.add_sample(std::abs(vel));
       state_millis_elapsed = millis() - state_millis_start;
 
-      // const bool cond_timeout   = state_millis_elapsed >= RA_TIME_TO_MAIN_MAX;
+      const bool cond_timeout   = state_millis_elapsed >= RA_TIME_TO_MAIN_MAX;
       const bool cond_min_time  = state_millis_elapsed >= RA_TIME_TO_MAIN_MIN;
       const bool cond_alt_lower = sampler.is_sampled() &&
                                   sampler.under_by_over<double>() > RA_TRUE_TO_FALSE_RATIO;
-      // const bool cond_overspeed = sampler_overspeed.is_sampled() &&
-      //                             sampler_overspeed.over_by_under<double>() > RA_TRUE_TO_FALSE_RATIO;
 
-      if (cond_alt_lower) {
+      if ((cond_timeout) ||
+          (cond_min_time && cond_alt_lower)) {
         ActivateDeployment(0);
         fsm.transfer(UserState::PAYLOAD_REALEASE);
       }
@@ -709,18 +661,22 @@ void EvalFSM() {
         sampler.set_capacity(RA_LANDED_SAMPLES, /*recount*/ false);
         sampler.set_threshold(RA_LANDED_VEL, /*recount*/ false);
 
+        //instrument
         sampler_sec.reset();
         sampler_sec.set_capacity(RA_INS_SAMPLES, /*recount*/ false);
-        sampler_sec.set_threshold(RA_LANDED_VEL, /*recount*/ false);
+        sampler_sec.set_threshold(RA_INS_ALT_COMPENSATED, /*recount*/ false);
       }
 
-      const double vel = filter_alt.kf.state_vector()[1];
-      sampler.add_sample(std::abs(vel));
+      //instrument
       sampler_sec.add_sample(alt_agl);
 
       if (sampler_sec.is_sampled() &&
           sampler_sec.under_by_over<double>() > RA_TRUE_TO_FALSE_RATIO)
         ActivateDeployment(1);
+
+      //landed
+      const double vel = filter_alt.kf.state_vector()[1];
+      sampler.add_sample(std::abs(vel));
 
       if (sampler.is_sampled() &&
           sampler.under_by_over<double>() > RA_TRUE_TO_FALSE_RATIO)
@@ -761,7 +717,7 @@ void ReadAltimeter() {
     if (sensors_health.altimeter[i] != SensorStatus::SENSOR_OK ||
         !altimeter[i]->read())
       continue;
-    if (simActivated && simEnabled) {
+    else if (simActivated && simEnabled) {
       alt_agl = altitude_msl_from_pressure(simPressure / 100.F, qnh_hpa);
     } else {
       data.altimeter[i].pressure_hpa = altimeter[i]->pressure_hpa();
@@ -820,17 +776,10 @@ void ReadMAG() {
           quaternionToEulerGI(&sensorValue.un.gyroIntegratedRV, &ypr, true);
           break;
       }
-
-      // data.roll  = ypr.roll;
-      // data.pitch = ypr.pitch;
-
-      // Serial.println(ypr.yaw);
-      // Serial.print("  ");
-      // Serial.print(ypr.roll);
-      // Serial.print("  ");
-      // Serial.println(ypr.pitch);
     }
-    data.yaw = ypr.yaw;
+    data.yaw   = ypr.yaw;
+    data.roll  = ypr.roll;
+    data.pitch = ypr.pitch;
     // Serial.println(data.yaw);
     taskEXIT_CRITICAL();
   }
@@ -851,13 +800,15 @@ void ReadTOF() {
 
 void ActivateDeployment(const size_t index) {
   switch (index) {
-    case 0: {  // Drogue/First Deployment
+    case 0: {  // Payload Deployment
       pos_a = RA_SERVO_A_RELEASE;
-      // servo_a.write(pos_a);
+      servo_a.write(pos_a);
       break;
     }
 
-    case 1: {  // Main/Second Deployment
+    case 1: {  // Instrument Deployment
+      pos_b = RA_SERVO_B_RELEASE;
+      servo_b.write(pos_b);
       break;
     }
 
@@ -867,7 +818,8 @@ void ActivateDeployment(const size_t index) {
 }
 
 void RetainDeployment() {
-  servos[0].write(pos_a);
+  servo_a.write(pos_a);
+  servo_b.write(pos_b);
 }
 
 void AutoZeroAlt() {
@@ -1004,8 +956,15 @@ void ConstructString() {
     << data.batt_volt                  // VOLTAGE (V, 0.1)
     << data.batt_curr                  // CURRENT (A, 0.01)
 
-    << 0.f << 0.f << 0.f
-    << 0.f << 0.f << 0.f
+    // 12–14 Gyro
+    << data.imu[0].gyr_x  // GYRO_R
+    << data.imu[0].gyr_y  // GYRO_P
+    << data.imu[0].gyr_z  // GYRO_Y
+
+    // 15–17 Accel
+    << data.imu[0].acc_x  // ACCEL_R
+    << data.imu[0].acc_y  // ACCEL_P
+    << data.imu[0].acc_z  // ACCEL_Y
 
     // 18–22 GPS
     << data.utc                   // GPS_TIME

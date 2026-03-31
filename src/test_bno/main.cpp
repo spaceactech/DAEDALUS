@@ -4,8 +4,6 @@
 #include <Adafruit_BNO08x.h>
 #include <Arduino_Extended.h>
 
-#define BNO08X_RESET -1
-
 struct euler_t {
   float yaw;
   float pitch;

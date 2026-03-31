@@ -31,8 +31,10 @@ constexpr uint32_t USER_GPIO_ISM256_INT2 = PA8;
 constexpr uint32_t USER_GPIO_ISM256_NSS  = PB12;
 
 constexpr uint32_t USER_GPIO_BNO_INT1 = PC4;
-#define BNO08X_RESET -1
+constexpr uint32_t BNO08X_RESET = PC0;
 #define BNO08X_ADDR  0x4B
+
+constexpr uint32_t M10S_RESET = PH1;
 
 constexpr uint32_t USER_GPIO_XBEE_RX   = PB5;
 constexpr uint32_t USER_GPIO_XBEE_TX   = PB_6_ALT1;

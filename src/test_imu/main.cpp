@@ -1,60 +1,56 @@
-#include <Wire.h>
-#include "SparkFun_VL53L1X.h"  //Click here to get the library: http://librarymanager/All#SparkFun_VL53L1X
-#include "UserPins.h"          // User's Pins Mapping
-#include <ISM6HG256XSensor.h>
+#include <SPI.h>
+#include "SparkFun_BMP581_Arduino_Library.h"
+#include "UserPins.h"
 
-//Optional interrupt and shutdown pins.
-SPIClass dev_spi(USER_GPIO_SPI1_MOSI, USER_GPIO_SPI1_MISO, USER_GPIO_SPI1_SCK);
-/*
-   @file    ISM6HG256X_DataLog_Terminal.ino
-   @author  STMicroelectornics
-   @brief   Example to use the ISM6HG256X inertial measurement sensor.
- *******************************************************************************
-   Copyright (c) 2025, STMicroelectronics
-   All rights reserved.
-   This software component is licensed by ST under BSD 3-Clause license,
-   the "License"; You may not use this file except in compliance with the
-   License. You may obtain a copy of the License at:
-                          opensource.org/licenses/BSD-3-Clause
- *******************************************************************************
-*/
+// Create a new sensor object
+SPIClass spi1(USER_GPIO_SPI1_MOSI, USER_GPIO_SPI1_MISO, USER_GPIO_SPI1_SCK);
+BMP581   pressureSensor;
 
-
-ISM6HG256XSensor  sensor(&dev_spi, USER_GPIO_ISM256_NSS);
-ISM6HG256X_Axes_t accel, angrate;
-
+// SPI parameters
 void setup() {
-  pinMode(USER_GPIO_ISM256_INT1, OUTPUT);
-  pinMode(USER_GPIO_ISM256_INT2, OUTPUT);
-  // digitalWrite(USER_GPIO_ISM256_INT1, 1);
-  // digitalWrite(USER_GPIO_ISM256_INT2, 1);
 
-  // Serial.begin(115200);
-  delay(4000);
-  dev_spi.begin();
-  sensor.begin();
-  sensor.Enable_X();
-  sensor.Enable_G();
-  Serial.println("finished");
+  // Start serial
+  Serial.begin(115200);
+  Serial.println("BMP581 Example2 begin!");
+
+  // Initialize the SPI library
+  spi1.begin();
+
+  // Check if sensor is connected and initialize
+  // Clock frequency is optional (defaults to 100kHz)
+  pinMode(USER_GPIO_BMP581_NSS, OUTPUT);
+  digitalWrite(USER_GPIO_BMP581_NSS, 0);
+
+  while (pressureSensor.beginSPI(USER_GPIO_BMP581_NSS, 400'000) != BMP5_OK) {
+    // Not connected, inform user
+    Serial.println("Error: BMP581 not connected, check wiring and CS pin!");
+
+    // Wait a bit to see if connection is established
+    delay(1000);
+  }
+
+  Serial.println("BMP581 connected!");
 }
 
 void loop() {
-  sensor.Get_X_Axes(&accel);
-  sensor.Get_G_Axes(&angrate);
+  // Get measurements from the sensor
+  bmp5_sensor_data data = {0, 0};
+  int8_t           err  = pressureSensor.getSensorData(&data);
 
-  Serial.print("Accel-X[mg]:");
-  Serial.print(accel.x);
-  Serial.print(",Accel-Y[mg]:");
-  Serial.print(accel.y);
-  Serial.print(",Accel-Z[mg]:");
-  Serial.print(accel.z);
+  // Check whether data was acquired successfully
+  if (err == BMP5_OK) {
+    // Acquisistion succeeded, print temperature and pressure
+    Serial.print("Temperature (C): ");
+    Serial.print(data.temperature);
+    Serial.print("\t\t");
+    Serial.print("Pressure (Pa): ");
+    Serial.println(data.pressure);
+  } else {
+    // Acquisition failed, most likely a communication error (code -2)
+    Serial.print("Error getting data from sensor! Error code: ");
+    Serial.println(err);
+  }
 
-  Serial.print(",AngRate-X[mdps]:");
-  Serial.print(angrate.x);
-  Serial.print(",AngRate-Y[mdps]:");
-  Serial.print(angrate.y);
-  Serial.print(",AngRate-Z[mdps]:");
-  Serial.println(angrate.z);
-
+  // Only print every second
   delay(1000);
 }

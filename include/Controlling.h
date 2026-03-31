@@ -26,7 +26,7 @@ constexpr double dL_max       = 0.2;  // rope pull limit **Change
 constexpr double ENC_TO_DEG = 360.0 / 4096.0;  // **Change
 
 // PID gains (tune later)
-constexpr double KP = 12.0 * 0.7;  //12
+constexpr double KP = 12.0 * 0.4;  //12
 constexpr double KI = 0.0;
 constexpr double KD = 0.15;
 
@@ -44,7 +44,11 @@ struct EncoderTracker {
   int  prev_pos       = 0;
   long rotation_count = 0;
 
-  double update(int pos) {
+  double update(int16_t raw_pos) {
+    // Normalize to 0–4095
+    int pos = raw_pos % 4096;
+    if (pos < 0) pos += 4096;
+
     int diff = pos - prev_pos;
 
     if (diff > 2048)
@@ -71,17 +75,18 @@ struct ServoDriver {
 
   static constexpr uint8_t IDS[3] = {1, 2, 3};
 
-  SMS_STS        sms_sts;
+  HLSCL          hlscl;
   uint8_t        rxPacket[4]  = {};
   byte           servo_accels = 255;
+  uint16_t       torque       = 500;
   EncoderTracker encoder_trackers[3]{};
 
   // ---- Read multi-turn angle ----
 
   double read_angle(uint8_t id) {
-    sms_sts.syncReadPacketTx(const_cast<uint8_t *>(IDS), sizeof(IDS), SMS_STS_PRESENT_POSITION_L, sizeof(rxPacket));
-    sms_sts.syncReadPacketRx(IDS[id], rxPacket);
-    int pos = sms_sts.syncReadRxPacketToWrod(15);
+    hlscl.syncReadPacketTx(const_cast<uint8_t *>(IDS), sizeof(IDS), SMS_STS_PRESENT_POSITION_L, sizeof(rxPacket));
+    hlscl.syncReadPacketRx(IDS[id], rxPacket);
+    int pos = hlscl.ReadPos(IDS[id]);
 
     if (pos < 0)
       return 0;
@@ -92,7 +97,7 @@ struct ServoDriver {
   // ---- Apply speed to servo (wheel mode) ----
 
   void write_speed(uint8_t id, int16_t speed) {
-    sms_sts.WriteSpe(id, speed, servo_accels);
+    hlscl.WriteSpe(id, speed, servo_accels, torque);
   }
 };
 
