@@ -6,15 +6,17 @@
 constexpr uint32_t USER_GPIO_LED    = PC14;
 constexpr uint32_t USER_GPIO_BUZZER = PC15;
 
-constexpr uint32_t USER_GPIO_SERVO_A = PA2;
-constexpr uint32_t USER_GPIO_SERVO_B = PA8;
+constexpr uint32_t USER_GPIO_SERVO_A = PA3;
+constexpr uint32_t USER_GPIO_SERVO_B = PB9;
 
 constexpr uint32_t USER_GPIO_SPI1_SCK  = PA5;
 constexpr uint32_t USER_GPIO_SPI1_MISO = PA6;
 constexpr uint32_t USER_GPIO_SPI1_MOSI = PA7;
 
-constexpr uint32_t USER_GPIO_I2C4_SDA = PB_7_ALT1;
-constexpr uint32_t USER_GPIO_I2C4_SCL = PB_8_ALT1;
+constexpr uint32_t USER_GPIO_I2C4_SDA = PB7_ALT1;
+constexpr uint32_t USER_GPIO_I2C4_SCL = PB8_ALT1;
+
+constexpr uint32_t USER_GPIO_GPS_NRST = PH1;
 
 constexpr uint32_t USER_GPIO_SDIO_CMD  = PD2;
 constexpr uint32_t USER_GPIO_SDIO_CK   = PC12;

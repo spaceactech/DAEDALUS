@@ -5,7 +5,7 @@
 #include <math.h>
 #include "Controlling.h"
 
-GPSCoordinate target_location  = {13.723186, 100.515473};
+GPSCoordinate target_location  = {14.35427014043309, 99.49715206055046};
 
 /* Telemetry control */
 bool telemetry_enabled = true; // need to false
@@ -19,6 +19,10 @@ String   rx_message = "";
 /* ACK / NACK counters */
 uint32_t last_ack;
 uint32_t last_nack;
+
+char c;
+
+bool gps_fixed = false;
 
 struct DataMemory {
   SensorIMU::Data       imu[RA_NUM_IMU];
@@ -58,6 +62,7 @@ struct valid {
   bool bno;
   bool m10s;
   bool tof;
+  bool sd;
 } pvalid;
 
 extern void ReadINA();

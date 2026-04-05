@@ -3,14 +3,10 @@
 
 #include <LibAvionics.h>
 #include <lib_xcore>
-#include "UserConfig.h"
 #include <SPI.h>
 #include <ISM6HG256XSensor.h>
 #include <SparkFun_BMP581_Arduino_Library.h>
 #include <SparkFun_u-blox_GNSS_v3.h>
-#include <Adafruit_BNO08x.h>
-
-Adafruit_BNO08x   bno086(BNO08X_RESET);
 
 constexpr double G = 9.80665;
 
@@ -25,8 +21,8 @@ protected:
   double gx{}, gy{}, gz{};
 
 public:
-  IMU_ISM256(SPIClass &spi, int cs)
-      : SensorIMU(), imu(&spi, cs) {}
+  IMU_ISM256(int cs)
+      : SensorIMU(), imu(&SPI, cs) {}
 
   bool begin() override {
     return imu.begin() == ISM6HG256X_OK &&
@@ -81,9 +77,13 @@ public:
   }
 
   bool begin() override {
+    // Serial.println(bmp.beginSPI(cs, 10'000'000) == BMP5_OK);
+    // Serial.println(bmp.setOSRMultipliers(&bmp_osr) == BMP5_OK);
+    // Serial.println(bmp.setODRFrequency(BMP5_ODR_10_HZ) == BMP5_OK);
+    // return false;
     return bmp.beginSPI(cs, 10'000'000) == BMP5_OK &&
            bmp.setOSRMultipliers(&bmp_osr) == BMP5_OK &&
-           bmp.setODRFrequency(BMP5_ODR_10_HZ) == BMP5_OK;
+           bmp.setODRFrequency(BMP5_ODR_20_HZ) == BMP5_OK;
   }
 
   bool read() override {
@@ -99,53 +99,7 @@ public:
   }
 };
 
-struct euler_t {
-  float yaw;
-  float pitch;
-  float roll;
-} ypr;
-
-void quaternionToEuler(float qr, float qi, float qj, float qk, euler_t* ypr, bool degrees = false) {
-
-    float sqr = sq(qr);
-    float sqi = sq(qi);
-    float sqj = sq(qj);
-    float sqk = sq(qk);
-
-    ypr->yaw = atan2(2.0 * (qi * qj + qk * qr), (sqi - sqj - sqk + sqr));
-    ypr->pitch = asin(-2.0 * (qi * qk - qj * qr) / (sqi + sqj + sqk + sqr));
-    ypr->roll = atan2(2.0 * (qj * qk + qi * qr), (-sqi - sqj + sqk + sqr));
-
-    if (degrees) {
-      ypr->yaw *= RAD_TO_DEG;
-      ypr->pitch *= RAD_TO_DEG;
-      ypr->roll *= RAD_TO_DEG;
-    }
-}
-
-void quaternionToEulerRV(sh2_RotationVectorWAcc_t* rotational_vector, euler_t* ypr, bool degrees = false) {
-    quaternionToEuler(rotational_vector->real, rotational_vector->i, rotational_vector->j, rotational_vector->k, ypr, degrees);
-}
-
-void quaternionToEulerGI(sh2_GyroIntegratedRV_t* rotational_vector, euler_t* ypr, bool degrees = false) {
-    quaternionToEuler(rotational_vector->real, rotational_vector->i, rotational_vector->j, rotational_vector->k, ypr, degrees);
-}
-
-#ifdef FAST_MODE
-  // Top frequency is reported to be 1000Hz (but freq is somewhat variable)
-  sh2_SensorId_t reportType = SH2_GYRO_INTEGRATED_RV;
-  long reportIntervalUs = 2000;
-#else
-  // Top frequency is about 250Hz but this report is more accurate
-  sh2_SensorId_t reportType = SH2_ARVR_STABILIZED_RV;
-  long reportIntervalUs = 5000;
-#endif
-void setReports(sh2_SensorId_t reportType, long report_interval) {
-  Serial.println("Setting desired reports");
-  if (! bno086.enableReport(reportType, report_interval)) {
-    Serial.println("Could not enable stabilized remote vector");
-  }
-}
+extern void setReports(void);
 
 // class GNSS_M10S final : public SensorGNSS {
 // protected:

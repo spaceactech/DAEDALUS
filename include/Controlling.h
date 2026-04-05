@@ -383,7 +383,8 @@ struct Controller {
       angles[i] = driver.read_angle(i);
       speeds[i] = compute_speed(pid_controllers[i], target_angles[i], angles[i]);
 
-      if (abs(target_angles[i] - angles[i]) < 0.5)
+      //deadband
+      if (abs(target_angles[i] - angles[i]) < 2)
         speeds[i] = 0;
     }
 
