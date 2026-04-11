@@ -36,16 +36,16 @@ uint8_t fsm_int = static_cast<uint8_t>(fsm.state());
 /* ------------ SAVE ALL ------------ */
 
 void savePersistent() {
-  EEPROM.get(ADDR_PACKET_COUNT, packet_count);
-  EEPROM.get(ADDR_ALT_REF, alt_ref);
-  EEPROM.get(ADDR_ACC, acc);
-  EEPROM.get(ADDR_UTC, utc);
+  EEPROM.put(ADDR_PACKET_COUNT, packet_count);
+  EEPROM.put(ADDR_ALT_REF, alt_ref);
+  EEPROM.put(ADDR_ACC, acc);
+  EEPROM.put(ADDR_UTC, utc);
 
-  EEPROM.get(ADDR_FSM_STATE, fsm_int);
+  EEPROM.put(ADDR_FSM_STATE, fsm_int);
 
-  EEPROM.get(ADDR_SERVO1, angle1);
-  EEPROM.get(ADDR_SERVO2, angle2);
-  EEPROM.get(ADDR_SERVO3, angle3);
+  EEPROM.put(ADDR_SERVO1, angle1);
+  EEPROM.put(ADDR_SERVO2, angle2);
+  EEPROM.put(ADDR_SERVO3, angle3);
 }
 /* ------------ LOAD ALL ------------ */
 

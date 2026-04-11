@@ -5,7 +5,7 @@
 #include <math.h>
 #include "Controlling.h"
 
-GPSCoordinate target_location  = {14.35427014043309, 99.49715206055046};
+GPSCoordinate target_location  = {13.722980431441558, 100.51530794838496};
 
 /* Telemetry control */
 bool telemetry_enabled = true; // need to false
@@ -28,7 +28,7 @@ struct DataMemory {
   SensorIMU::Data       imu[RA_NUM_IMU];
   SensorAltimeter::Data altimeter[RA_NUM_ALTIMETER];
 
-  String mode = "F";
+  char mode[4] = "F";
 
   uint32_t timestamp_epoch;
   uint32_t timestamp_us{};
@@ -52,8 +52,19 @@ struct DataMemory {
   float roll;
   float heading;
 
-  bool   deploy;
-  String cmd_echo = "ECHO";
+  bool deploy;
+  char cmd_echo[8] = "ECHO";
+
+  // Freshness flags — set true by each Read*() when new data arrives,
+  // cleared by ConstructString() after consuming, mirroring test_i2c pattern.
+  int32_t cpu_temp = 0;  // snapshot taken by CB_ConstructData before ConstructString
+
+  bool imu_fresh = false;
+  bool alt_fresh = false;
+  bool bno_fresh = false;
+  bool gps_fresh = false;
+  bool ina_fresh = false;
+  bool tof_fresh = false;
 
 };
 

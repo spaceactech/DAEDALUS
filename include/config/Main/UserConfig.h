@@ -12,7 +12,7 @@ constexpr const char *RA_FILE_EXT = "CSV";
 
 // Number of IMU sensors
 constexpr size_t RA_NUM_IMU = 1;
-  
+
 // Number of Altimeter sensors
 constexpr size_t RA_NUM_ALTIMETER = 1;
 
@@ -25,8 +25,15 @@ constexpr bool RA_LED_ENABLED = true;
 // USB Debug
 constexpr bool RA_USB_DEBUG_ENABLED = true;
 
+// Stack High Water Mark (define to enable per-thread RAM reporting via serial)
+// #define RA_STACK_HWM_ENABLED
+
+// Minimum free stack words before a task is flagged with '!' in HWM output
+// (uxTaskGetStackHighWaterMark returns words; 1 word = 4 bytes on ARM Cortex-M)
+#define RA_STACK_HWM_MIN_WORDS 100
+
 // Retain Deployment
-constexpr bool RA_RETAIN_DEPLOYMENT_ENABLED = true;
+constexpr bool RA_RETAIN_DEPLOYMENT_ENABLED = false;
 
 // Auto-Zero Altitude
 constexpr bool RA_AUTO_ZERO_ALT_ENABLED = false;
@@ -40,19 +47,19 @@ constexpr uint32_t UBLOX_CUSTOM_MAX_WAIT = 250ul;
 constexpr uint32_t RA_INTERVAL_IMU_READING = 5ul;  // ms
 
 // Altimeter Reading
-constexpr uint32_t RA_INTERVAL_ALTIMETER_READING = 50ul;  // ms
+constexpr uint32_t RA_INTERVAL_ALTIMETER_READING = 25ul;  // ms
 
 // GNSS Reading
-constexpr uint32_t RA_INTERVAL_GNSS_READING = 56ul;  // ms
+constexpr uint32_t RA_INTERVAL_GNSS_READING = 100ul;  // ms
 
 // GNSS Reading
-constexpr uint32_t RA_INTERVAL_MAG_READING = 30ul;  // ms
+constexpr uint32_t RA_INTERVAL_MAG_READING = 100ul;  // ms
 
 // GNSS Reading
-constexpr uint32_t RA_INTERVAL_TOF_READING = 20ul;  // ms
+constexpr uint32_t RA_INTERVAL_TOF_READING = 100ul;  // ms
 
 // GNSS Reading
-constexpr uint32_t RA_INTERVAL_SENSORS_READING = 500ul;  // ms
+constexpr uint32_t RA_INTERVAL_INA_READING = 200ul;  // ms
 
 // FSM Evaluation
 constexpr uint32_t RA_INTERVAL_FSM_EVAL = 10ul;  // ms
@@ -64,7 +71,7 @@ constexpr uint32_t RA_JITTER_TOLERANCE_FSM_EVAL = 1ul;  // ms
 constexpr uint32_t RA_INTERVAL_CONSTRUCT = 100ul;  // ms
 
 // Data Construct
-constexpr uint32_t RA_INTERVAL_Controlling = 20ul;  // ms
+constexpr uint32_t RA_INTERVAL_Controlling = 100ul;  // ms 20Hz
 
 // Altitude Auto-Zero
 constexpr uint32_t RA_INTERVAL_AUTOZERO = 50ul;  // ms
@@ -81,11 +88,11 @@ constexpr int RA_SERVO_MIN = 500;                                // us PWM
 constexpr int RA_SERVO_MAX = 2450;                               // us PWM
 constexpr int RA_SERVO_CEN = (RA_SERVO_MIN + RA_SERVO_MAX) / 2;  // us PWM
 
-constexpr float RA_SERVO_A_RELEASE = 180;    // deg
+constexpr float RA_SERVO_A_RELEASE = 180;  // deg
 constexpr float RA_SERVO_A_LOCK    = 115;  // deg
 
-constexpr float RA_SERVO_B_RELEASE = 180;    // deg
-constexpr float RA_SERVO_B_LOCK    = 25;  // deg
+constexpr float RA_SERVO_B_RELEASE = 180;  // deg
+constexpr float RA_SERVO_B_LOCK    = 25;   // deg
 
 
 /* SAMPLER SETTINGS */
@@ -109,7 +116,7 @@ constexpr uint32_t RA_TIME_TO_APOGEE_MAX = 44 * 1000ul;  // ms
 
 // Launch acceleration: acc. threshold (GT)
 constexpr double RA_LAUNCH_ACC = 9.81 * 3.0;  // 9.81 m/s^2 (g)
-constexpr double RA_LAUNCH_ALT = 50.0;   // m
+constexpr double RA_LAUNCH_ALT = 50.0;        // m
 
 // Launch acceleration detection period
 constexpr uint32_t RA_LAUNCH_TON     = 200ul;  // ms
@@ -137,7 +144,7 @@ constexpr double RA_DROGUE_VEL = 14.0;  // m/s
 
 // Main Deployment Event Altitude: altitude threshold (LT)
 constexpr double RA_MAIN_ALT_RAW = 534.4;  // m Apogee * 0.8
-constexpr double RA_INS_ALT_RAW = 2.0;  // m
+constexpr double RA_INS_ALT_RAW  = 2.0;    // m
 
 // Safeguard overspeed threshold to main deployment
 constexpr double RA_MAIN_OVERSPEED_VEL = RA_DROGUE_VEL * 1.5;
@@ -165,7 +172,7 @@ constexpr uint32_t RA_INS_SAMPLES = RA_MAIN_TON / RA_INTERVAL_FSM_EVAL;
 
 // Main Deployment Event Triggering Delay Compensation Multiplier
 constexpr double RA_MAIN_COMPENSATION_MULT = 2.0;
-constexpr double RA_INS_COMPENSATION_MULT = 2.0;
+constexpr double RA_INS_COMPENSATION_MULT  = 2.0;
 
 // Main Deployment Event Triggering Delay Compensation Value
 constexpr double RA_MAIN_ALT_COMPENSATED = RA_MAIN_ALT_RAW + RA_MAIN_COMPENSATION_MULT * RA_DROGUE_VEL * (static_cast<double>(RA_MAIN_TON) / 1000.);  // m

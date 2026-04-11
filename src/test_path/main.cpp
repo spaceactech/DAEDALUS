@@ -14,8 +14,11 @@ unsigned long startTime;
 double       heading_deg = 0.0;
 static float dt          = 0.02;
 
-GPSCoordinate current = {38.3756417, -79.6073944};
-GPSCoordinate target  = {38.3760167, -79.6078722};
+// GPSCoordinate current = {38.3756417, -79.6073944};
+// GPSCoordinate target  = {38.3760167, -79.6078722};
+
+GPSCoordinate current = {13.72318890180544, 100.51601879382348};
+GPSCoordinate target  = {13.722796707782305, 100.51438233163296};
 
 Controller controller;
 
@@ -23,11 +26,12 @@ void setup() {
   Serial.begin(115200);
   delay(4000);
 
-  startTime = millis();  // start timer
-
   ServoSerial.begin(1'000'000);
   controller.driver.hlscl.pSerial = &ServoSerial;
   delay(1000);
+
+  startTime = millis();  // start timer
+
 
   // Initialize servo driver
   controller.driver.hlscl.syncReadBegin(sizeof(ServoDriver::IDS), sizeof(controller.driver.rxPacket), 5);
@@ -40,6 +44,15 @@ void setup() {
 }
 
 void loop() {
+
+  controller.driver.write_speed(1, 100);
+  controller.driver.write_speed(2, -100);
+  controller.driver.write_speed(3, -100);
+
+  while (1) {
+    delay(1);
+  }
+
   // -------------------------------
   // Example sensor inputs
   // -------------------------------
@@ -83,10 +96,6 @@ void loop() {
     // const int16_t speed3 = Controller::compute_speed(controller.pid_controllers[2], servo_target_angles[2], angles[2]);
 
     // servo_pid_update()
-
-    // controller.driver.write_speed(1, speed1);
-    // controller.driver.write_speed(2, speed2);
-    // controller.driver.write_speed(3, speed3);
   });
 
   // ---------------------------------------------------
