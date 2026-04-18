@@ -228,8 +228,10 @@ void UserSetupActuator() {
   controller.driver.hlscl.syncReadBegin(sizeof(ServoDriver::IDS), sizeof(controller.driver.rxPacket), 5);
   for (size_t i = 0; i < sizeof(ServoDriver::IDS); ++i) {
     controller.driver.hlscl.WheelMode(ServoDriver::IDS[i]);
+    controller.driver.hlscl.EnableTorque(ServoDriver::IDS[i], 1);
   }
 
+  // Test
   for (size_t i = 0; i < 3; ++i) {
     controller.driver.write_speed(ServoDriver::IDS[i], 500);
     delay(50);

@@ -392,7 +392,7 @@ struct Controller {
     xcore::pid_controller_t<uint32_t> &pid,
     const double                      &target_angle,
     const double                      &current_angle) {
-    double speed = pid.update(target_angle, current_angle, 0.02);
+    double speed = pid.update(target_angle, current_angle, 0.05);
     speed        = constrain(speed, -3500.0, 3500.0);
 
     return static_cast<int16_t>(speed);
@@ -410,7 +410,8 @@ struct Controller {
         double motion   = last_angles[i] - prev_angles[i];
         int16_t speed   = 0;
 
-        if (std::abs(err) >= 2.0) {
+        // Deadband
+        if (std::abs(err) >= 6.0) {
           bool moving_wrong = (err > 0 && motion < 0) || (err < 0 && motion > 0);
 
           if (moving_wrong && std::abs(last_speeds[i]) > 100) {
