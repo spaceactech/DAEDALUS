@@ -21,14 +21,15 @@ constexpr double EARTH_RADIUS_M     = 6371000.0;
 constexpr double DISTANCE_TO_TARGET = 59.16;
 
 constexpr double SPOOL_RADIUS = 0.0109;
-constexpr double dL_max       = 0.298758;  // rope pull limit **Change
+constexpr double dL_max       = 0.298758;
+;  // rope pull limit **Change
 
 constexpr double ENC_TO_DEG = 360.0 / 4096.0;  // **Change
 
 // PID gains (tune later)
-constexpr double KP = 3.5;   // reduced from 4.8 to damp overshoot near target
+constexpr double KP = 2.5;
 constexpr double KI = 0.0;
-constexpr double KD = 0.35;  // reduced from 0.8 (too much jitter), still above original 0.15
+constexpr double KD = 0.15;
 
 constexpr double at = 0.2;
 constexpr double av = 0.2;
@@ -41,27 +42,34 @@ struct GPSCoordinate {
 };
 
 struct EncoderTracker {
-  int  prev_pos       = 0;
-  long rotation_count = 0;
+  int    prev_pos       = 0;
+  long   rotation_count = 0;
+  double last_angle     = 0;
 
-  double update(int16_t raw_pos) {
-    // Normalize to 0–4095
+  double update(int16_t raw_pos, double max_deg_per_step = 200.0) {
     int pos = raw_pos % 4096;
     if (pos < 0) pos += 4096;
 
-    int diff = pos - prev_pos;
+    int  diff      = pos - prev_pos;
+    bool crossover = false;
 
-    if (diff > 2048)
-      rotation_count--;
+    // Rollover detection: only valid if servo moves <180 deg per read interval
+    if (diff > 2048)  { rotation_count--; crossover = true; }
+    if (diff < -2048) { rotation_count++; crossover = true; }
 
-    if (diff < -2048)
-      rotation_count++;
+    double new_angle = (rotation_count * 4096L + pos) * ENC_TO_DEG;
 
-    prev_pos = pos;
+    // Reject corrupt (non-crossover) reads that imply an impossible jump.
+    // Always advance prev_pos so a failed read cannot re-trigger the same
+    // crossover on the next call and lock the tracker in place.
+    if (!crossover && std::abs(new_angle - last_angle) > max_deg_per_step) {
+      prev_pos = pos;
+      return last_angle;
+    }
 
-    long total_counts = rotation_count * 4096L + pos;
-
-    return total_counts * ENC_TO_DEG;
+    prev_pos   = pos;
+    last_angle = new_angle;
+    return last_angle;
   }
 };
 
@@ -81,10 +89,26 @@ struct ServoDriver {
   uint16_t       torque       = 500;
   EncoderTracker encoder_trackers[3]{};
 
+  // ---- Read multi-turn angle for servo at index ----
+
+  double read_angle(size_t index) {
+    hlscl.syncReadPacketTx(const_cast<uint8_t *>(&IDS[index]), 1, SMS_STS_PRESENT_POSITION_L, sizeof(rxPacket));
+
+    if (hlscl.syncReadPacketRx(IDS[index], rxPacket) <= 0)
+      return encoder_trackers[index].last_angle;
+
+    int pos = ((rxPacket[1] & 0x0F) << 8) | rxPacket[0];
+    return encoder_trackers[index].update(static_cast<int16_t>(pos));
+  }
+
   // ---- Apply speed to servo (wheel mode) ----
 
   void write_speed(uint8_t id, int16_t speed) {
-    hlscl.WriteSpe(id, speed, servo_accels, torque);
+    int ack = hlscl.WriteSpe(id, speed, servo_accels, torque);
+    Serial.print("ACK(");
+    Serial.print(id);
+    Serial.print("): ");
+    Serial.println(ack);
   }
 };
 
@@ -200,6 +224,12 @@ struct Guidance {
     delta[0] = target_velocity - velocity;
     delta[1] = target_heading - heading;
 
+    // if (delta[1] > 180)
+    //   delta[1] -= 360;
+
+    // if (delta[1] < -180)
+    //   delta[1] += 360;
+
     return delta;
   }
 
@@ -270,7 +300,7 @@ struct Guidance {
     numeric_vector<3> angle{};
 
     for (int i = 0; i < 3; i++) {
-      double scaled   = u[i] * 0.75;
+      double scaled   = std::max(0.0, u[i]) * 0.75;
       double dL       = scaled * dL_max;
       double rotation = dL / (2.0 * M_PI * SPOOL_RADIUS);
 
@@ -335,6 +365,8 @@ struct Controller {
   ServoDriver driver;
   Guidance    guidance;
   double      last_angles[3] = {};
+  // Set each entry to -1 if that servo's encoder counts down when speed is positive
+  static constexpr int8_t DIRS[3] = {1, 1, 1};
 
   void init_pid() {
     for (auto &pid: pid_controllers) {
@@ -348,46 +380,37 @@ struct Controller {
   static int16_t compute_speed(
     xcore::pid_controller_t<uint32_t> &pid,
     const double                      &target_angle,
-    const double                      &current_angle,
-    double                             dt = 0.05) {
-    double speed = pid.update(target_angle, current_angle, dt);
+    const double                      &current_angle) {
+    double speed = pid.update(target_angle, current_angle, 0.02);
     speed        = constrain(speed, -3500.0, 3500.0);
 
     return static_cast<int16_t>(speed);
   }
 
-  // ---- Read servo positions (blocking UART — run in a dedicated low-priority task) ----
-  // CB_Control must NOT call this directly; it should call servo_pid_update which uses
-  // the cached last_angles written here by CB_ReadServo.
+  // ---- Main servo PID update ----
 
-  void servo_read_positions() {
-    driver.hlscl.syncReadPacketTx(
-      const_cast<uint8_t *>(ServoDriver::IDS), sizeof(ServoDriver::IDS),
-      SMS_STS_PRESENT_POSITION_L, sizeof(driver.rxPacket));
+  void servo_pid_update(const numeric_vector<3> &target_angles) {
+    static xcore::NbDelay delay(10, millis);
 
-    for (size_t i = 0; i < 3; ++i) {
-      driver.hlscl.syncReadPacketRx(ServoDriver::IDS[i], driver.rxPacket);
-      int pos = driver.hlscl.ReadPos(ServoDriver::IDS[i]);
-      if (pos >= 0)
-        last_angles[i] = driver.encoder_trackers[i].update(pos);
-    }
-  }
+    delay([&]() {
+      int16_t speeds[3] = {};
 
-  // ---- PID update using cached last_angles — no UART reads, safe to call from any task ----
+      for (size_t i = 0; i < 3; ++i) {
+        last_angles[i] = driver.read_angle(i);
+        speeds[i]      = compute_speed(pid_controllers[i], target_angles[i], last_angles[i]);
 
-  void servo_pid_update(const numeric_vector<3> &target_angles, double dt = 0.05) {
-    int16_t speeds[3] = {};
+        if (std::abs(target_angles[i] - last_angles[i]) < 2.0)
+          speeds[i] = 0;
+      }
 
-    for (size_t i = 0; i < 3; ++i) {
-      speeds[i] = compute_speed(pid_controllers[i], target_angles[i], last_angles[i], dt);
-
-      //deadband — wide enough to prevent coast-through re-entry oscillation
-      if (abs(target_angles[i] - last_angles[i]) < 5)
+      for (size_t i = 0; i < 3; ++i) {
+        Serial.print(i);
+        Serial.print(": ");
+        Serial.println(speeds[i]);
+        driver.write_speed(ServoDriver::IDS[i], speeds[i] * DIRS[i]);
         speeds[i] = 0;
-    }
-
-    for (size_t i = 0; i < 3; ++i)
-      driver.write_speed(ServoDriver::IDS[i], speeds[i]);
+      }
+    });
   }
 };
 

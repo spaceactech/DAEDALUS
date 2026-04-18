@@ -45,7 +45,6 @@ void setup() {
     default:
       Serial.println("Unknown");
   }
-
   // Now we will try to open the 'volume'/'partition' - it should be FAT16 or FAT32
   if (!fatFs.init()) {
     Serial.println("Could not find FAT partition.\nMake sure you've formatted the card");

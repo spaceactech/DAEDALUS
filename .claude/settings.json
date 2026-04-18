@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pio device *)",
+      "Bash(echo \"PID: $!\")",
+      "PowerShell([System.IO.Ports.SerialPort]::GetPortNames\\(\\))",
+      "Bash(git checkout *)"
+    ],
+    "additionalDirectories": [
+      "d:\\PlatformIO\\Firmware-DAEDALUS\\src"
+    ]
+  }
+}

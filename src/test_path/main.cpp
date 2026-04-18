@@ -62,6 +62,7 @@ static void read_gnss() {
     vel_n           = static_cast<double>(gnss.getNedNorthVel()) * 1e-3;
     vel_e           = static_cast<double>(gnss.getNedEastVel()) * 1e-3;
   }
+  current_pos = {current_pos.lat, current_pos.lon};
 }
 
 static void read_mag() {
@@ -86,10 +87,9 @@ void setup() {
 
   // Servo
   ServoSerial.begin(1'000'000);
-  ServoSerial.setTimeout(2);
+  ServoSerial.setTimeout(10);
   controller.driver.hlscl.pSerial = &ServoSerial;
-  controller.driver.hlscl.syncReadBegin(
-    sizeof(ServoDriver::IDS), sizeof(controller.driver.rxPacket), 5);
+  controller.driver.hlscl.syncReadBegin(sizeof(ServoDriver::IDS), sizeof(controller.driver.rxPacket), 10);
   for (size_t i = 0; i < sizeof(ServoDriver::IDS); ++i)
     controller.driver.hlscl.WheelMode(ServoDriver::IDS[i]);
   controller.init_pid();
@@ -140,33 +140,31 @@ void setup() {
   Serial.print("[BARO] alt_ref = ");
   Serial.println(alt_ref, 2);
 
-  Serial.println("T(s),YAW,AGL,BEARING,DIST,FIX,TGT0,CUR0,TGT1,CUR1,TGT2,CUR2");
+  Serial.println("T(s),LAT,LON,YAW,AGL,BEARING,DIST_M,DIST_RATIO,FIX,TGT0,CUR0,TGT1,CUR1,TGT2,CUR2");
 }
 
 // ── Loop ──────────────────────────────────────────────────────────────────────
 void loop() {
-  static xcore::NbDelay baro_tick(50, millis);
-  static xcore::NbDelay gnss_tick(100, millis);
-  static xcore::NbDelay mag_tick(100, millis);
-  static xcore::NbDelay pid_tick(50, millis);
-  static xcore::NbDelay print_tick(200, millis);
+  // All I2C sensor reads and the servo UART are sequenced inside one tick so
+  // they never overlap — I2C finishes completely before any servo byte is sent.
+  static xcore::NbDelay main_tick(50, millis);
+  static xcore::NbDelay print_tick(100, millis);
 
-  static uint32_t pid_last_ms = millis();
-
-  baro_tick([&]() { read_baro(); });
-  gnss_tick([&]() { read_gnss(); });
-  mag_tick([&]() { read_mag(); });
-
-  pid_tick([&]() {
-    uint32_t now = millis();
-    double   dt  = (now - pid_last_ms) * 0.001;
-    pid_last_ms  = now;
-    if (dt < 0.005) dt = 0.05;  // guard against zero on first tick
-
-    if (gps_fixed) {
-      servo_target_angles = controller.guidance.update(current_pos, target_pos, alt_agl, vel_n, vel_e, yaw_deg);
-      controller.servo_pid_update(servo_target_angles, dt);
+  main_tick([&]() {
+    // 1. All I2C reads first — baro every tick, gnss+mag every 2nd tick (100ms)
+    static uint8_t slow_div = 0;
+    read_baro();
+    if (++slow_div >= 2) {
+      read_gnss();
+      read_mag();
+      slow_div = 0;
     }
+
+    // 2. Servo UART — I2C is fully done before the first byte is sent
+    if (gps_fixed)
+      servo_target_angles = controller.guidance.update(
+        current_pos, target_pos, alt_agl, vel_n, vel_e, yaw_deg);
+    controller.servo_pid_update(servo_target_angles);
   });
 
   print_tick([&]() {
@@ -174,13 +172,27 @@ void loop() {
     double dist    = Guidance::calculate_distance(current_pos, target_pos);
     double t       = millis() * 0.001;
 
+    double dLat   = (target_pos.lat - current_pos.lat) * DEG_TO_RAD;
+    double dLon   = (target_pos.lon - current_pos.lon) * DEG_TO_RAD;
+    double a      = std::sin(dLat / 2) * std::sin(dLat / 2) +
+                    std::cos(current_pos.lat * DEG_TO_RAD) *
+                    std::cos(target_pos.lat  * DEG_TO_RAD) *
+                    std::sin(dLon / 2) * std::sin(dLon / 2);
+    double dist_m = EARTH_RADIUS_M * 2 * std::atan2(std::sqrt(a), std::sqrt(1 - a));
+
     Serial.print(t, 2);
+    Serial.print(',');
+    Serial.print(current_pos.lat, 7);
+    Serial.print(',');
+    Serial.print(current_pos.lon, 7);
     Serial.print(',');
     Serial.print(yaw_deg, 1);
     Serial.print(',');
     Serial.print(alt_agl, 1);
     Serial.print(',');
     Serial.print(bearing, 1);
+    Serial.print(',');
+    Serial.print(dist_m, 2);
     Serial.print(',');
     Serial.print(dist, 4);
     Serial.print(',');
