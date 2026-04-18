@@ -365,14 +365,25 @@ struct Controller {
   ServoDriver driver;
   Guidance    guidance;
   double      last_angles[3] = {};
-  // Set each entry to -1 if that servo's encoder counts down when speed is positive
-  static constexpr int8_t DIRS[3] = {1, 1, 1};
+  int16_t     last_speeds[3] = {};
+
+  // Per-servo direction sign; flips automatically when wrong-way travel is detected
+  int8_t  dirs[3]        = {1, 1, 1};
+  double  prev_angles[3] = {};
+  double  wrong_accum[3] = {};
+
+  static constexpr double SWAP_THRESHOLD_DEG = 100.0;
 
   void init_pid() {
     for (auto &pid: pid_controllers) {
       pid.update_limits(-3500, 3500);
       pid.update_dt(0.05);
     }
+  }
+
+  // Reset wrong-way accumulator when a new target is commanded for servo idx
+  void reset_dir_accum(int idx) {
+    wrong_accum[idx] = 0;
   }
 
   // ---- PID speed computation ----
@@ -387,28 +398,38 @@ struct Controller {
     return static_cast<int16_t>(speed);
   }
 
-  // ---- Main servo PID update ----
+  // ---- Main servo PID update with automatic direction-swap ----
 
   void servo_pid_update(const numeric_vector<3> &target_angles) {
     static xcore::NbDelay delay(10, millis);
 
     delay([&]() {
-      int16_t speeds[3] = {};
-
       for (size_t i = 0; i < 3; ++i) {
-        last_angles[i] = driver.read_angle(i);
-        speeds[i]      = compute_speed(pid_controllers[i], target_angles[i], last_angles[i]);
+        last_angles[i]  = driver.read_angle(i);
+        double err      = target_angles[i] - last_angles[i];
+        double motion   = last_angles[i] - prev_angles[i];
+        int16_t speed   = 0;
 
-        if (std::abs(target_angles[i] - last_angles[i]) < 2.0)
-          speeds[i] = 0;
-      }
+        if (std::abs(err) >= 2.0) {
+          bool moving_wrong = (err > 0 && motion < 0) || (err < 0 && motion > 0);
 
-      for (size_t i = 0; i < 3; ++i) {
-        Serial.print(i);
-        Serial.print(": ");
-        Serial.println(speeds[i]);
-        driver.write_speed(ServoDriver::IDS[i], speeds[i] * DIRS[i]);
-        speeds[i] = 0;
+          if (moving_wrong && std::abs(last_speeds[i]) > 100) {
+            wrong_accum[i] += std::abs(motion);
+            if (wrong_accum[i] >= SWAP_THRESHOLD_DEG) {
+              dirs[i]        = -dirs[i];
+              wrong_accum[i] = 0;
+            }
+          } else {
+            wrong_accum[i] = 0;
+          }
+
+          speed = static_cast<int16_t>(
+            compute_speed(pid_controllers[i], target_angles[i], last_angles[i]) * dirs[i]);
+        }
+
+        prev_angles[i] = last_angles[i];
+        last_speeds[i] = speed;
+        driver.write_speed(ServoDriver::IDS[i], speed);
       }
     });
   }

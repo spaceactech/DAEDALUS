@@ -3,29 +3,28 @@
 #include "Controlling.h"
 
 HardwareSerial ServoSerial(USER_GPIO_Half);
+HardwareSerial Xbee(USER_GPIO_XBEE_RX, USER_GPIO_XBEE_TX);
 
-ServoDriver driver;
+Controller controller;
 
-double target_deg[3] = {0.0, 0.0, 0.0};
+static numeric_vector<3> target_angles{};
 
-static constexpr uint16_t SPD    = 500;
-static constexpr uint8_t  ACC    = 50;
-static constexpr uint16_t TORQUE = 1000;
-
-static inline s16 deg_to_pos(double deg) {
-  deg = constrain(deg, 0.0, 360.0);
-  return static_cast<s16>((deg / 360.0) * 4096.0);
-}
-
-static inline double pos_to_deg(int raw) {
-  return (raw / 4096.0) * 360.0;
-}
-
-// Commands: t <deg>  t0 <deg>  t1 <deg>  t2 <deg>
-static void parse_serial() {
-  if (!Serial.available()) return;
-  String s = Serial.readStringUntil('\n');
+// Commands: t <deg>  t0 <deg>  t1 <deg>  t2 <deg>  stop
+static void parse_xbee() {
+  if (!Xbee.available()) return;
+  String s = Xbee.readStringUntil('\n');
   s.trim();
+
+  if (s == "stop") {
+    for (int i = 0; i < 3; i++) {
+      target_angles[i] = controller.last_angles[i];
+      controller.driver.hlscl.WriteSpe(ServoDriver::IDS[i], 0,
+        controller.driver.servo_accels, controller.driver.torque);
+      controller.last_speeds[i] = 0;
+    }
+    Xbee.println("[STOP]");
+    return;
+  }
 
   int sep = s.indexOf(' ');
   if (sep < 0) return;
@@ -34,58 +33,68 @@ static void parse_serial() {
   double val = s.substring(sep + 1).toDouble();
 
   auto go = [&](int idx, double d) {
-    target_deg[idx] = d;
-    int ack         = driver.hlscl.WritePosEx(ServoDriver::IDS[idx], deg_to_pos(d), SPD, ACC, TORQUE);
-    Serial.printf("[GO] servo %d -> %.2f deg  ACK=%d\n", ServoDriver::IDS[idx], d, ack);
+    target_angles[idx] = d;
+    controller.reset_dir_accum(idx);
+    Xbee.printf("[TGT] servo %d -> %.2f deg\n", ServoDriver::IDS[idx], d);
   };
 
-  if (key == "t") {
-    for (int i = 0; i < 3; i++) go(i, val);
-  } else if (key == "t0")
-    go(0, val);
-  else if (key == "t1")
-    go(1, val);
-  else if (key == "t2")
-    go(2, val);
+  if      (key == "t")  { for (int i = 0; i < 3; i++) go(i, val); }
+  else if (key == "t0") go(0, val);
+  else if (key == "t1") go(1, val);
+  else if (key == "t2") go(2, val);
 }
 
 void setup() {
-  Serial.begin(115200);
+  Xbee.begin(115200);
   delay(2000);
-  Serial.println("[TEST_SERVO] boot");
+  Xbee.println("[TEST_SERVO] boot - PID wheel mode");
 
   ServoSerial.begin(1'000'000);
   ServoSerial.setTimeout(20);
-  driver.hlscl.pSerial = &ServoSerial;
-  driver.hlscl.syncReadBegin(sizeof(ServoDriver::IDS), sizeof(driver.rxPacket), 10);
+  controller.driver.hlscl.pSerial = &ServoSerial;
+  controller.driver.hlscl.syncReadBegin(
+    sizeof(ServoDriver::IDS), sizeof(controller.driver.rxPacket), 10);
 
   for (int i = 0; i < 3; i++) {
-    if (driver.hlscl.Ping(ServoDriver::IDS[i]) == ServoDriver::IDS[i])
-      Serial.printf("[PING] servo %d OK\n", ServoDriver::IDS[i]);
+    if (controller.driver.hlscl.Ping(ServoDriver::IDS[i]) == ServoDriver::IDS[i])
+      Xbee.printf("[PING] servo %d OK\n", ServoDriver::IDS[i]);
     else
-      Serial.printf("[PING] servo %d FAIL\n", ServoDriver::IDS[i]);
+      Xbee.printf("[PING] servo %d FAIL\n", ServoDriver::IDS[i]);
 
-    driver.hlscl.ServoMode(ServoDriver::IDS[i]);
-    driver.hlscl.EnableTorque(ServoDriver::IDS[i], 1);
+    controller.driver.hlscl.WheelMode(ServoDriver::IDS[i]);
+    controller.driver.hlscl.EnableTorque(ServoDriver::IDS[i], 1);
   }
 
-  Serial.println("Cmds: t <deg>  t0 <deg>  t1 <deg>  t2 <deg>  (0-360)");
-  Serial.println("T(s),TGT0,CUR0,TGT1,CUR1,TGT2,CUR2");
+  controller.init_pid();
+
+  for (int i = 0; i < 3; i++) {
+    target_angles[i]               = controller.driver.read_angle(i);
+    controller.prev_angles[i]      = target_angles[i];
+    controller.last_angles[i]      = target_angles[i];
+  }
+
+  Xbee.println("Cmds: t <deg>  t0/t1/t2 <deg>  stop");
+  Xbee.println("T(s),TGT0,CUR0,SPD0,TGT1,CUR1,SPD1,TGT2,CUR2,SPD2");
 }
 
 void loop() {
+  static xcore::NbDelay log_delay(100, millis);
 
-  parse_serial();
+  parse_xbee();
 
-  double t = millis() * 0.001;
-  Serial.print(t, 2);
-  for (int i = 0; i < 3; i++) {
-    int    raw     = driver.hlscl.ReadPos(ServoDriver::IDS[i]);
-    double cur_deg = (raw >= 0) ? pos_to_deg(raw) : -1.0;
-    Serial.print(',');
-    Serial.print(target_deg[i], 2);
-    Serial.print(',');
-    Serial.print(cur_deg, 2);
-  }
-  Serial.println();
+  controller.servo_pid_update(target_angles);
+
+  log_delay([&]() {
+    double t = millis() * 0.001;
+    Xbee.print(t, 2);
+    for (int i = 0; i < 3; i++) {
+      Xbee.print(',');
+      Xbee.print(target_angles[i], 2);
+      Xbee.print(',');
+      Xbee.print(controller.last_angles[i], 2);
+      Xbee.print(',');
+      Xbee.print(controller.last_speeds[i]);
+    }
+    Xbee.println();
+  });
 }

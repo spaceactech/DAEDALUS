@@ -10,6 +10,7 @@
 // ── Interfaces ──────────────────────────────────────────────────────────────
 TwoWire        i2c4(USER_GPIO_I2C4_SDA, USER_GPIO_I2C4_SCL);
 HardwareSerial ServoSerial(USER_GPIO_Half);
+HardwareSerial Xbee(USER_GPIO_XBEE_RX, USER_GPIO_XBEE_TX);
 
 // ── Sensors ──────────────────────────────────────────────────────────────────
 Altimeter_BMP581 baro(USER_GPIO_BMP581_NSS);
@@ -78,9 +79,9 @@ static void read_mag() {
 
 // ── Setup ─────────────────────────────────────────────────────────────────────
 void setup() {
-  Serial.begin(115200);
+  Xbee.begin(115200);
   delay(3000);
-  Serial.println("[TEST_PATH] boot");
+  Xbee.println("[TEST_PATH] boot");
 
   setup_spi();
   setup_i2c();
@@ -93,22 +94,22 @@ void setup() {
   for (size_t i = 0; i < sizeof(ServoDriver::IDS); ++i)
     controller.driver.hlscl.WheelMode(ServoDriver::IDS[i]);
   controller.init_pid();
-  Serial.println("[SERVO] OK");
+  Xbee.println("[SERVO] OK");
 
   // BMP581
   if (baro.begin())
-    Serial.println("[BARO] OK");
+    Xbee.println("[BARO] OK");
   else
-    Serial.println("[BARO] FAIL");
+    Xbee.println("[BARO] FAIL");
 
   // BNO08x
   pinMode(BNO08X_RESET, OUTPUT);
   digitalWrite(BNO08X_RESET, HIGH);
   if (bno.begin(BNO08X_ADDR, i2c4, USER_GPIO_BNO_INT1, BNO08X_RESET)) {
     bno.enableRotationVector();
-    Serial.println("[BNO] OK");
+    Xbee.println("[BNO] OK");
   } else {
-    Serial.println("[BNO] FAIL");
+    Xbee.println("[BNO] FAIL");
   }
 
   // u-blox M10S
@@ -123,13 +124,13 @@ void setup() {
     gnss.setNavigationFrequency(10, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
     gnss.setAutoPVT(true, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
     gnss.setDynamicModel(DYN_MODEL_AIRBORNE4g, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
-    Serial.println("[GNSS] OK");
+    Xbee.println("[GNSS] OK");
   } else {
-    Serial.println("[GNSS] FAIL");
+    Xbee.println("[GNSS] FAIL");
   }
 
   // Grab ground altitude reference (avg 20 samples)
-  Serial.println("[BARO] zeroing alt...");
+  Xbee.println("[BARO] zeroing alt...");
   double acc_alt = 0;
   for (int i = 0; i < 20; ++i) {
     delay(50);
@@ -137,10 +138,10 @@ void setup() {
       acc_alt += baro.altitude_m();
   }
   alt_ref = acc_alt / 20.0;
-  Serial.print("[BARO] alt_ref = ");
-  Serial.println(alt_ref, 2);
+  Xbee.print("[BARO] alt_ref = ");
+  Xbee.println(alt_ref, 2);
 
-  Serial.println("T(s),LAT,LON,YAW,AGL,BEARING,DIST_M,DIST_RATIO,FIX,TGT0,CUR0,TGT1,CUR1,TGT2,CUR2");
+  Xbee.println("T(s),LAT,LON,YAW,AGL,BEARING,DIST_M,DIST_RATIO,FIX,TGT0,CUR0,TGT1,CUR1,TGT2,CUR2");
 }
 
 // ── Loop ──────────────────────────────────────────────────────────────────────
@@ -180,29 +181,29 @@ void loop() {
                     std::sin(dLon / 2) * std::sin(dLon / 2);
     double dist_m = EARTH_RADIUS_M * 2 * std::atan2(std::sqrt(a), std::sqrt(1 - a));
 
-    Serial.print(t, 2);
-    Serial.print(',');
-    Serial.print(current_pos.lat, 7);
-    Serial.print(',');
-    Serial.print(current_pos.lon, 7);
-    Serial.print(',');
-    Serial.print(yaw_deg, 1);
-    Serial.print(',');
-    Serial.print(alt_agl, 1);
-    Serial.print(',');
-    Serial.print(bearing, 1);
-    Serial.print(',');
-    Serial.print(dist_m, 2);
-    Serial.print(',');
-    Serial.print(dist, 4);
-    Serial.print(',');
-    Serial.print(gps_fixed ? 1 : 0);
+    Xbee.print(t, 2);
+    Xbee.print(',');
+    Xbee.print(current_pos.lat, 7);
+    Xbee.print(',');
+    Xbee.print(current_pos.lon, 7);
+    Xbee.print(',');
+    Xbee.print(yaw_deg, 1);
+    Xbee.print(',');
+    Xbee.print(alt_agl, 1);
+    Xbee.print(',');
+    Xbee.print(bearing, 1);
+    Xbee.print(',');
+    Xbee.print(dist_m, 2);
+    Xbee.print(',');
+    Xbee.print(dist, 4);
+    Xbee.print(',');
+    Xbee.print(gps_fixed ? 1 : 0);
     for (size_t i = 0; i < 3; ++i) {
-      Serial.print(',');
-      Serial.print(servo_target_angles[i], 2);
-      Serial.print(',');
-      Serial.print(controller.last_angles[i], 2);
+      Xbee.print(',');
+      Xbee.print(servo_target_angles[i], 2);
+      Xbee.print(',');
+      Xbee.print(controller.last_angles[i], 2);
     }
-    Serial.println();
+    Xbee.println();
   });
 }
