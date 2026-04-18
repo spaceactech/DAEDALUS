@@ -26,6 +26,7 @@
 #include "UserSensors.h"  // User's Hardware Implementations
 #include "UserFSM.h"      // User's FSM States
 #include "Controlling.h"
+#include "custom_EEPROM.h"
 /* END INCLUDE USER'S IMPLEMENTATIONS */
 
 /* BEGIN INCLUDE MAIN */
@@ -87,7 +88,56 @@ GPSCoordinate     current_location;
 Controller        controller;
 numeric_vector<3> servo_target_angles;
 
-/* EEPROM */
+/* BEGIN ACTUATORS */
+float pos_a = RA_SERVO_A_LOCK;
+float pos_b = RA_SERVO_B_LOCK;
+/* END ACTUATORS */
+
+/* EEPROM — backed by STM32H725 Backup SRAM (0x38800000)
+   Direct memcpy: no Flash erase, no blocking, ~microseconds.          */
+
+void EEPROM_Write() {
+  EEPROMStore s{};
+  s.magic = EEPROM_MAGIC;
+  memcpy(s.utc, data.utc, sizeof(s.utc));
+  s.packet_count = packet_count;
+  s.state        = static_cast<uint8_t>(fsm.state());
+  s.alt_ref      = alt_ref;
+  s.pos_a        = pos_a;
+  s.pos_b        = pos_b;
+  for (size_t i = 0; i < 3; ++i)
+    s.servo_target[i] = servo_target_angles[i];
+
+  s.crc = eeprom_crc8(
+    reinterpret_cast<const uint8_t *>(&s) + EEPROM_PAYLOAD_OFFSET,
+    sizeof(EEPROMStore) - EEPROM_PAYLOAD_OFFSET);
+
+  memcpy(reinterpret_cast<void *>(BKPSRAM_BASE), &s, sizeof(s));
+  __DSB();  // ensure write completes before returning
+}
+
+// Read only if magic + CRC are valid (data was previously *defined*).
+// If either check fails ("ndef") returns without touching any live variable.
+void EEPROM_Read() {
+  EEPROMStore s{};
+  memcpy(&s, reinterpret_cast<const void *>(BKPSRAM_BASE), sizeof(s));
+
+  if (s.magic != EEPROM_MAGIC) return;
+
+  const uint8_t expected = eeprom_crc8(
+    reinterpret_cast<const uint8_t *>(&s) + EEPROM_PAYLOAD_OFFSET,
+    sizeof(EEPROMStore) - EEPROM_PAYLOAD_OFFSET);
+  if (s.crc != expected) return;
+
+  memcpy(data.utc, s.utc, sizeof(data.utc));
+  packet_count = s.packet_count;
+  fsm.transfer(static_cast<UserState>(s.state));
+  alt_ref = s.alt_ref;
+  pos_a   = s.pos_a;
+  pos_b   = s.pos_b;
+  for (size_t i = 0; i < 3; ++i)
+    servo_target_angles[i] = s.servo_target[i];
+}
 
 /* BEGIN SD CARD */
 FsUtil fs_sd;
@@ -99,17 +149,24 @@ Filter1T                     filter_acc;
 Filter1T                     filter_alt;
 /* END FILTERS */
 
-/* BEGIN ACTUATORS */
-float pos_a = RA_SERVO_A_LOCK;
-float pos_b = RA_SERVO_B_LOCK;
-/* END ACTUATORS */
-
 /* BEGIN USER PRIVATE VARIABLES */
 hal::rtos::mutex_t mtx_spi;
+hal::rtos::mutex_t mtx_sdio;
 hal::rtos::mutex_t mtx_i2c;  // guards i2c4 bus (BNO, GPS, INA, TOF)
 hal::rtos::mutex_t mtx_cdc;
 hal::rtos::mutex_t mtx_uart;
 hal::rtos::mutex_t mtx_buf;  // guards tx_buf and sd_buf
+hal::rtos::mutex_t mtx_nav;  // guards nav_state — held for microseconds only
+
+// Navigation state written by GNSS/MAG tasks, read by CB_Control.
+// Kept separate from mtx_i2c so CB_Control never blocks on an I2C transaction.
+struct NavState {
+  GPSCoordinate location{};
+  double        vn    = 0;
+  double        ve    = 0;
+  double        yaw   = 0;
+  bool          fixed = false;
+} nav_state;
 
 #ifdef RA_STACK_HWM_ENABLED
 struct StackHWM {
@@ -164,7 +221,7 @@ void UserSetupActuator() {
   controller.init_pid();
   // Paraglider Servo
   ServoSerial.begin(1'000'000);
-  ServoSerial.setTimeout(10);  // cap UART read timeout at 10 ms — prevents ~1 s stall per servo when disconnected
+  ServoSerial.setTimeout(2);  // at 1 Mbaud a 4-byte response arrives in ~40 µs; 2 ms is generous without burning CPU
   controller.driver.hlscl.pSerial = &ServoSerial;
 
   // Initialize servo driver
@@ -172,6 +229,15 @@ void UserSetupActuator() {
   for (size_t i = 0; i < sizeof(ServoDriver::IDS); ++i) {
     controller.driver.hlscl.WheelMode(ServoDriver::IDS[i]);
   }
+
+  for (size_t i = 0; i < 3; ++i) {
+    controller.driver.write_speed(ServoDriver::IDS[i], 500);
+    delay(50);
+    controller.driver.write_speed(ServoDriver::IDS[i], -500);
+    delay(50);
+    controller.driver.write_speed(ServoDriver::IDS[i], 0);
+  }
+
 
   //DEPLOYMENT SERVO
   servo_a.attach(USER_GPIO_SERVO_A, RA_SERVO_MIN, RA_SERVO_MAX, RA_SERVO_MAX);
@@ -202,6 +268,9 @@ void UserSetupUSART() {
 void UserSetupI2C() {
   i2c4.setClock(100000);
   i2c4.begin();
+  // Abort + reset the peripheral if any transaction hangs beyond 50 ms.
+  // Without this, a stuck slave holds mtx_i2c forever and freezes all I2C tasks.
+  i2c4.setTimeout(50);
 }
 
 // Bit-bang 9 SCL pulses to release a slave stuck mid-byte, then reinit I2C4.
@@ -265,8 +334,38 @@ void UserSetupSensor() {
   Serial.println("\n[SENSOR] VL53L1X ToF Distance (I2C 0x29)");
   tof.setI2CAddress(0x29);
   pvalid.tof = (tof.begin() == 0);
+  if (pvalid.tof)
+    tof.setDistanceModeLong();
   Serial.print("  Init: ");
   Serial.println(pvalid.tof ? "OK" : "FAIL");
+}
+
+void UserSetupSD() {
+  // Force-reset SDMMC1 to flush stale DMA/FIFO state from the previous session.
+  // Without this, HAL_SD_ReadBlocks blocks forever in the RXFIFOHF polling loop
+  // on warm resets (watchdog, debugger, NVIC reset) where the peripheral is not
+  // power-cycled.
+  __HAL_RCC_SDMMC1_FORCE_RESET();
+  delay(20);
+  __HAL_RCC_SDMMC1_RELEASE_RESET();
+  delay(250);  // SD spec: 250 ms power-on stabilisation
+
+  SD.setDx(USER_GPIO_SDIO_DAT0, USER_GPIO_SDIO_DAT1, USER_GPIO_SDIO_DAT2, USER_GPIO_SDIO_DAT3);
+  SD.setCMD(USER_GPIO_SDIO_CMD);
+  SD.setCK(USER_GPIO_SDIO_CK);
+  pvalid.sd = SD.begin();
+
+  if (pvalid.sd) {
+    fs_sd.find_file_name(RA_FILE_NAME, RA_FILE_EXT);
+    fs_sd.open_one<FsMode::WRITE>();
+    fs_sd.file() << "ID,COUNT,EPOCH,MILLIS,MODE,"
+                    "AX,AY,AZ,ACC,ACC_KF,"
+                    "GX,GY,GZ,"
+                    "MX,MY,MZ,"
+                    "UTC,GPS_ALT,LAT,LON,SIV,"
+                    "VEL,POS,ALT,TEMP,PRESS,AGL,ALT_REF,APOGEE\r\n";
+    fs_sd.file().flush();
+  }
 }
 /* END USER SETUP */
 
@@ -327,7 +426,7 @@ void CB_ReadMAG(void *) {
     mtx_i2c.exec([&]() {
       const uint32_t t0 = millis();
       ReadMAG();
-      if (millis() - t0 > 150) {
+      if (millis() - t0 > 40) {
         if (++hung_count >= 2) {
           hung_count = 0;
           RecoverI2C4();
@@ -336,6 +435,7 @@ void CB_ReadMAG(void *) {
         hung_count = 0;
       }
     });
+    mtx_nav.exec([&]() { nav_state.yaw = data.yaw; });
   });
 }
 
@@ -348,7 +448,7 @@ void CB_ReadGNSS(void *) {
     mtx_i2c.exec([&]() {
       const uint32_t t0 = millis();
       ReadGNSS();
-      if (millis() - t0 > 300) {
+      if (millis() - t0 > 40) {
         if (++hung_count >= 2) {
           hung_count = 0;
           RecoverI2C4();
@@ -356,6 +456,12 @@ void CB_ReadGNSS(void *) {
       } else {
         hung_count = 0;
       }
+    });
+    mtx_nav.exec([&]() {
+      nav_state.location = current_location;
+      nav_state.vn       = data.velocity_n;
+      nav_state.ve       = data.velocity_e;
+      nav_state.fixed    = gps_fixed;
     });
   });
 }
@@ -369,7 +475,7 @@ void CB_ReadINA(void *) {
     mtx_i2c.exec([&]() {
       const uint32_t t0 = millis();
       ReadINA();
-      if (millis() - t0 > 150) {
+      if (millis() - t0 > 40) {
         if (++hung_count >= 2) {
           hung_count = 0;
           RecoverI2C4();
@@ -382,24 +488,44 @@ void CB_ReadINA(void *) {
 }
 
 void CB_ReadTOF(void *) {
-  static uint8_t hung_count = 0;
+  // ReadTOF() splits its two I2C transactions across a 50 ms gap so the bus
+  // is free while the sensor integrates.  Do NOT wrap it in mtx_i2c.exec()
+  // here — that would deadlock on the non-recursive osMutex.
+  static uint8_t hung_count  = 0;
+  static uint8_t stale_count = 0;
   hal::rtos::interval_loop(RA_INTERVAL_TOF_READING, [&]() -> void {
 #ifdef RA_STACK_HWM_ENABLED
     stack_hwm.tof = uxTaskGetStackHighWaterMark(NULL);
 #endif
-    mtx_i2c.exec([&]() {
-      const uint32_t t0 = millis();
-      ReadTOF();
-      // TOF can legitimately take up to 100 ms; allow 250 ms before flagging
-      if (millis() - t0 > 250) {
-        if (++hung_count >= 2) {
-          hung_count = 0;
-          RecoverI2C4();
-        }
-      } else {
-        hung_count = 0;
+    if (!pvalid.tof) return;
+
+    data.tof_fresh    = false;  // cleared here; set true only on a successful read
+    const uint32_t t0 = millis();
+    ReadTOF();
+
+    // Hung-bus detection: normal cycle is ~55 ms; a full hang (both I2C phases
+    // aborting at the 50 ms HAL timeout) takes ~150 ms.  120 ms sits between them.
+    if (millis() - t0 > 120) {
+      if (++hung_count >= 2) {
+        hung_count  = 0;
+        stale_count = 0;
+        mtx_i2c.exec([&]() { RecoverI2C4(); });
       }
-    });
+    } else {
+      hung_count = 0;
+    }
+
+    // Stale-data detection: sensor stopped delivering results
+    if (data.tof_fresh) {
+      stale_count = 0;
+    } else if (++stale_count >= 10) {
+      // 10 consecutive cycles (~1 s) with no fresh data — reinitialise sensor
+      stale_count = 0;
+      mtx_i2c.exec([&]() {
+        tof.stopRanging();
+        pvalid.tof = (tof.begin() == 0);
+      });
+    }
   });
 }
 
@@ -453,19 +579,29 @@ void CB_ConstructData(void *) {
 }
 
 void CB_SDLogger(void *) {
-  hal::rtos::interval_loop(200ul, [&]() -> void {
-    String snap;
-    mtx_buf.exec([&]() { snap = sd_buf; });
-    mtx_spi.exec([&]() -> void {
-      fs_sd.file() << snap;
-      fs_sd.file().flush();
+  xcore::NbDelay write_delay(RA_INTERVAL_CONSTRUCT, millis);
+  xcore::NbDelay flush_delay(5000ul, millis);
+
+  hal::rtos::interval_loop(1ul, [&]() -> void {
+    write_delay([&]() {
+      String snap;
+      mtx_buf.exec([&]() {
+        snap   = sd_buf;
+        sd_buf = "";
+      });
+      if (snap.length() == 0) return;
+      mtx_sdio.exec([&]() { fs_sd.file() << snap; });
+    });
+
+    flush_delay([&]() {
+      mtx_sdio.exec([&]() { fs_sd.file().flush(); });
     });
   });
 }
 
 void CB_SDSave(void *) {
   hal::rtos::interval_loop(1000ul, [&]() -> void {
-    mtx_spi.exec([&]() -> void {
+    mtx_sdio.exec([&]() -> void {
       fs_sd.file().flush();
     });
   });
@@ -490,11 +626,12 @@ void CB_Control(void *) {
 #ifdef RA_STACK_HWM_ENABLED
     stack_hwm.control = uxTaskGetStackHighWaterMark(NULL);
 #endif
-    if (gps_fixed) {
-      servo_target_angles = controller.guidance.update(current_location, target_location, alt_agl,
-                                                       data.velocity_n, data.velocity_e, data.yaw);
-      controller.servo_pid_update(servo_target_angles);
-    }
+    NavState snap;
+    mtx_nav.exec([&]() { snap = nav_state; });
+    if (!snap.fixed) return;
+
+    servo_target_angles = controller.guidance.update(snap.location, target_location, alt_agl, snap.vn, snap.ve, snap.yaw);
+    controller.servo_pid_update(servo_target_angles);
   });
 }
 
@@ -595,36 +732,51 @@ void CB_RetainDeployment(void *) {
   });
 }
 
-void CB_INSDeploy(void *) {
-  static xcore::sampler_t<RA_INS_SAMPLES, double> sampler;
-  sampler.reset();
-  sampler.set_capacity(RA_INS_SAMPLES, /*recount*/ false);
-  sampler.set_threshold(RA_INS_ALT_COMPENSATED, /*recount*/ false);  // meters
+void EvalINSDeploy() {
+  static xcore::sampler_t<RA_INS_SAMPLES, double> sampler_tof;
+  static xcore::sampler_t<RA_INS_SAMPLES, double> sampler_baro_near;
+  static xcore::sampler_t<RA_INS_SAMPLES, double> sampler_baro_critical;
 
+  if (sampler_tof.capacity() == 0) {
+    sampler_tof.set_capacity(RA_INS_SAMPLES, /*recount*/ false);
+    sampler_tof.set_threshold(RA_INS_ALT_COMPENSATED, /*recount*/ false);
+
+    sampler_baro_near.set_capacity(RA_INS_SAMPLES, /*recount*/ false);
+    sampler_baro_near.set_threshold(15.0, /*recount*/ false);
+
+    sampler_baro_critical.set_capacity(RA_INS_SAMPLES, /*recount*/ false);
+    sampler_baro_critical.set_threshold(3.0, /*recount*/ false);
+  }
+
+  const auto state = fsm.state();
+  if (state != UserState::PAYLOAD_REALEASE && state != UserState::LANDED) return;
+  if (data.deploy) return;
+
+  sampler_tof.add_sample(static_cast<double>(data.tof));
+  sampler_baro_near.add_sample(alt_agl);
+  sampler_baro_critical.add_sample(alt_agl);
+
+  const bool tof_triggered = sampler_tof.is_sampled() &&
+                             sampler_tof.under_by_over<double>() > RA_TRUE_TO_FALSE_RATIO;
+
+  const bool baro_near = sampler_baro_near.is_sampled() &&
+                         sampler_baro_near.under_by_over<double>() > RA_TRUE_TO_FALSE_RATIO;
+
+  const bool baro_critical = sampler_baro_critical.is_sampled() &&
+                             sampler_baro_critical.under_by_over<double>() > RA_TRUE_TO_FALSE_RATIO;
+
+  if ((tof_triggered && baro_near) || baro_critical) {
+    ActivateDeployment(1);
+    data.deploy = true;
+  }
+}
+
+void CB_INSDeploy(void *) {
   hal::rtos::interval_loop(RA_INTERVAL_TOF_READING, [&]() -> void {
 #ifdef RA_STACK_HWM_ENABLED
     stack_hwm.ins = uxTaskGetStackHighWaterMark(NULL);
 #endif
-    const auto state = fsm.state();
-    if (state != UserState::DESCENT &&
-        state != UserState::PROBE_REALEASE &&
-        state != UserState::PAYLOAD_REALEASE)
-      return;
-
-    if (data.deploy) return;
-
-    // data.tof is already in meters (converted in ReadTOF)
-    sampler.add_sample(static_cast<double>(data.tof));
-
-    const bool tof_triggered = sampler.is_sampled() &&
-                               sampler.under_by_over<double>() > RA_TRUE_TO_FALSE_RATIO;
-    const bool baro_near     = alt_agl < 15.0;  // barometer confirms near ground
-    const bool baro_critical = alt_agl < 7.0;   // hard fallback: force deploy
-
-    if ((tof_triggered && baro_near) || baro_critical) {
-      ActivateDeployment(1);
-      data.deploy = true;
-    }
+    EvalINSDeploy();
   });
 }
 
@@ -647,36 +799,45 @@ void CB_NeoPixelBlink(void *) {
   });
 }
 
+void CB_EEPROMWrite(void *) {
+  hal::rtos::interval_loop(RA_EEPROM_WRITE_INTERVAL, [&]() -> void {
+    EEPROM_Write();
+  });
+}
+
 /* END USER THREADS */
 
 void UserThreads() {
   hal::rtos::scheduler.create(CB_EvalFSM, {.name = "CB_EvalFSM", .stack_size = 2048, .priority = osPriorityRealtime});
   hal::rtos::scheduler.create(CB_Control, {.name = "CB_Control", .stack_size = 4096, .priority = osPriorityNormal});
-  hal::rtos::scheduler.create(CB_INSDeploy, {.name = "CB_INSDeploy", .stack_size = 4096, .priority = osPriorityHigh});
+  hal::rtos::scheduler.create(CB_INSDeploy, {.name = "CB_INSDeploy", .stack_size = 2048, .priority = osPriorityHigh});
 
-  hal::rtos::scheduler.create(CB_ReadIMU, {.name = "CB_ReadIMU", .stack_size = 4096, .priority = osPriorityHigh});
-  hal::rtos::scheduler.create(CB_ReadAltimeter, {.name = "CB_ReadAltimeter", .stack_size = 4096, .priority = osPriorityHigh});
+  hal::rtos::scheduler.create(CB_ReadIMU, {.name = "CB_ReadIMU", .stack_size = 2048, .priority = osPriorityHigh});
+  hal::rtos::scheduler.create(CB_ReadAltimeter, {.name = "CB_ReadAltimeter", .stack_size = 2048, .priority = osPriorityHigh});
 
-  hal::rtos::scheduler.create(CB_ReadMAG, {.name = "CB_ReadMAG", .stack_size = 2048, .priority = osPriorityNormal});
-  hal::rtos::scheduler.create(CB_ReadGNSS, {.name = "CB_ReadGNSS", .stack_size = 2048, .priority = osPriorityNormal});
-  hal::rtos::scheduler.create(CB_ReadINA, {.name = "CB_ReadINA", .stack_size = 2048, .priority = osPriorityNormal});
-  hal::rtos::scheduler.create(CB_ReadTOF, {.name = "CB_ReadTOF", .stack_size = 2048, .priority = osPriorityNormal});
+  hal::rtos::scheduler.create(CB_ReadMAG, {.name = "CB_ReadMAG", .stack_size = 2048, .priority = osPriorityAboveNormal});
+  hal::rtos::scheduler.create(CB_ReadGNSS, {.name = "CB_ReadGNSS", .stack_size = 2048, .priority = osPriorityAboveNormal});
+  hal::rtos::scheduler.create(CB_ReadINA, {.name = "CB_ReadINA", .stack_size = 2048, .priority = osPriorityAboveNormal});
+  hal::rtos::scheduler.create(CB_ReadTOF, {.name = "CB_ReadTOF", .stack_size = 2048, .priority = osPriorityAboveNormal});
 
-  // if constexpr (RA_RETAIN_DEPLOYMENT_ENABLED)
-  //   hal::rtos::scheduler.create(CB_RetainDeployment, {.name = "CB_RetainDeployment", .stack_size = 2048, .priority = osPriorityNormal});
+  if constexpr (RA_RETAIN_DEPLOYMENT_ENABLED)
+    hal::rtos::scheduler.create(CB_RetainDeployment, {.name = "CB_RetainDeployment", .stack_size = 2048, .priority = osPriorityNormal});
+
 
   // if constexpr (RA_AUTO_ZERO_ALT_ENABLED)
   //   hal::rtos::scheduler.create(CB_AutoZeroAlt, {.name = "CB_AutoZeroAlt", .stack_size = 4096, .priority = osPriorityHigh});
 
-  hal::rtos::scheduler.create(CB_ConstructData, {.name = "CB_ConstructData", .stack_size = 2048, .priority = osPriorityBelowNormal});
+  hal::rtos::scheduler.create(CB_ConstructData, {.name = "CB_ConstructData", .stack_size = 2048, .priority = osPriorityNormal});
 
   // if (pvalid.sd) {
-  //   hal::rtos::scheduler.create(CB_SDLogger, {.name = "CB_SDLogger", .stack_size = 8192, .priority = osPriorityNormal});
-  //   hal::rtos::scheduler.create(CB_SDSave, {.name = "CB_SDSave", .stack_size = 8192, .priority = osPriorityNormal});
+  //   hal::rtos::scheduler.create(CB_SDLogger, {.name = "CB_SDLogger", .stack_size = 4096, .priority = osPriorityNormal});
+  //   // hal::rtos::scheduler.create(CB_SDSave, {.name = "CB_SDSave", .stack_size = 4096, .priority = osPriorityNormal});
   // }
 
+  hal::rtos::scheduler.create(CB_EEPROMWrite, {.name = "CB_EEPROMWrite", .stack_size = 2048, .priority = osPriorityLow});
+
   hal::rtos::scheduler.create(CB_Transmit, {.name = "CB_Transmit", .stack_size = 2048, .priority = osPriorityNormal});
-  hal::rtos::scheduler.create(CB_ReceiveCommand, {.name = "CB_ReceiveCommand", .stack_size = 4096, .priority = osPriorityNormal});
+  hal::rtos::scheduler.create(CB_ReceiveCommand, {.name = "CB_ReceiveCommand", .stack_size = 2048, .priority = osPriorityNormal});
 
   hal::rtos::scheduler.create(CB_NeoPixelBlink, {.name = "CB_NeoPixelBlink", .stack_size = 1024, .priority = osPriorityBelowNormal});
 
@@ -685,23 +846,7 @@ void UserThreads() {
 }
 
 void setup() {
-  /* BEGIN STORAGES SETUP */
-  SD.setDx(USER_GPIO_SDIO_DAT0, USER_GPIO_SDIO_DAT1, USER_GPIO_SDIO_DAT2, USER_GPIO_SDIO_DAT3);
-  SD.setCMD(USER_GPIO_SDIO_CMD);
-  SD.setCK(USER_GPIO_SDIO_CK);
-  pvalid.sd = SD.begin();
-  fs_sd.find_file_name(RA_FILE_NAME, RA_FILE_EXT);
-  fs_sd.open_one<FsMode::WRITE>();
-  sd_buf.reserve(1024);
-  /* CSV Header */
-  // fs_sd.file() << "ID,COUNT,EPOCH,MILLIS,MODE,"
-  //                 "AX,AY,AZ,ACC,ACC_KF,"
-  //                 "GX,GY,GZ,"
-  //                 "MX,MY,MZ,"
-  //                 "UTC,GPS_ALT,LAT,LON,SIV,"
-  //                 "VEL,POS,ALT,TEMP,PRESS,AGL,ALT_REF,APOGEE\r\n";
-  // fs_sd.file().flush();
-  /* END STORAGES SETUP */
+  sd_buf.reserve(2048);
 
   /* BEGIN GPIO AND INTERFACES SETUP */
   UserSetupGPIO();
@@ -711,6 +856,7 @@ void setup() {
   UserSetupSPI();
   UserSetupI2C();
   UserSetupSensor();
+  // UserSetupSD();
   /* END GPIO AND INTERFACES SETUP */
 
   /* BEGIN FILTERS SETUP */
@@ -739,11 +885,23 @@ void setup() {
   }
   /* END SENSORS SETUP */
 
-  // Zero altitude reference
-  delay(4000);
+
   Serial.println(printable_sensor_status(sensors_health.altimeter[0]));
-  ReadAltimeter();
-  alt_ref = data.altimeter[0].altitude_m;
+  Serial.println(printable_sensor_status(sensors_health.imu[0]));
+
+  // Enable Backup SRAM clock + write access (must be done before read or write)
+  EEPROM_Init();
+
+  // Restore last flight state from EEPROM (only if data was previously defined)
+  if constexpr (RA_EEPROM_READ_ENABLED) {
+    EEPROM_Read();
+    Serial.println("[EEPROM] Restore attempted");
+  } else {
+    // Zero altitude reference
+    delay(4000);
+    ReadAltimeter();
+    alt_ref = data.altimeter[0].altitude_m;
+  }
 
   led.setPixelColor(1, led.Color(0, 0, 255));
   led.setPixelColor(2, led.Color(0, 0, 255));
@@ -787,6 +945,7 @@ void EvalFSM() {
       }
       break;
     }
+
     case UserState::LAUNCH_PAD: {
       // !!!! Next: DETECT launch !!!!
       if (fsm.on_enter()) {  // Run once
@@ -796,24 +955,21 @@ void EvalFSM() {
 
         sampler_sec.reset();
         sampler_sec.set_capacity(RA_LAUNCH_SAMPLES, /*recount*/ false);
-        sampler_sec.set_threshold(RA_LAUNCH_ALT, /*recount*/ false);  //Balloon
+        sampler_sec.set_threshold(RA_LAUNCH_ALT, /*recount*/ false);
       }
 
       // sampler.add_sample(acc);                    // Use raw acceleration, unfiltered
       sampler.add_sample(filter_acc.kf.state());  // Use filtered acceleration
-
-      sampler_sec.add_sample(alt_agl);  // Use filtered alt
+      sampler_sec.add_sample(alt_agl);            // Use filtered alt
 
 
       if (sampler.is_sampled() &&
             sampler.over_by_under<double>() > RA_TRUE_TO_FALSE_RATIO ||
           sampler_sec.is_sampled() &&
             sampler_sec.over_by_under<double>() > RA_TRUE_TO_FALSE_RATIO) {
-        if constexpr (RA_LED_ENABLED) {
-          digitalWrite(USER_GPIO_BUZZER, 0);
-        }
         fsm.transfer(UserState::ASCENT);
       }
+
       break;
     }
 
@@ -848,14 +1004,14 @@ void EvalFSM() {
     }
 
     case UserState::DESCENT: {
-      // <--- Next: activate pyro/servo and always transfer --->
+      // <--- Next: always transfer --->
       hal::rtos::delay_ms(1500);
       fsm.transfer(UserState::PROBE_REALEASE);
       break;
     }
 
     case UserState::PROBE_REALEASE: {
-      // !!!! Next: DETECT main deployment altitude !!!!
+      // !!!! Next: DETECT Payload altitude !!!!
       if (fsm.on_enter()) {  // Run once
         sampler.reset();
         sampler.set_capacity(RA_MAIN_SAMPLES, /*recount*/ false);
@@ -909,6 +1065,7 @@ void EvalFSM() {
       break;
   }
 }
+
 
 void ReadIMU() {
   for (size_t i = 0; i < RA_NUM_IMU; ++i) {
@@ -997,27 +1154,28 @@ void ReadMAG() {
   }
 }
 
-// Returns true if a valid reading was obtained, false on timeout/error.
-static bool ReadTOFOnce() {
-  tof.startRanging();
-  const uint32_t deadline = millis() + 100;  // 100 ms max (sensor typical ~33 ms)
-  while (!tof.checkForDataReady()) {
-    if (millis() > deadline) {
-      tof.stopRanging();
-      return false;
-    }
-    hal::rtos::delay_ms(1);
-  }
-  data.tof = tof.getDistance() * 0.001f;  // mm → m
-  tof.clearInterrupt();
-  tof.stopRanging();
-  return true;
-}
-
+// Two-phase TOF read: start ranging (brief mutex hold), wait 50 ms with the
+// bus free, then read the result (brief mutex hold).  VL53L1X is typically
+// ready in ~33 ms, so 50 ms is a safe fixed delay.
+// Sets data.tof_fresh = true only when a measurement was actually received.
 void ReadTOF() {
-  if (pvalid.tof) {
-    ReadTOFOnce();
-  }
+  if (!pvalid.tof) return;
+
+  // Phase 1: trigger — ~1 ms on the bus
+  mtx_i2c.exec([&]() { tof.startRanging(); });
+
+  // Wait outside the mutex so GPS / BNO / INA can use the bus freely
+  hal::rtos::delay_ms(50);
+
+  // Phase 2: read result — ~3 ms on the bus
+  mtx_i2c.exec([&]() {
+    if (tof.checkForDataReady()) {
+      data.tof       = tof.getDistance() * 0.001f;  // mm → m
+      data.tof_fresh = true;
+      tof.clearInterrupt();  // only clear after a successful read
+    }
+    tof.stopRanging();
+  });
 }
 
 void ActivateDeployment(const size_t index) {
@@ -1126,6 +1284,15 @@ void HandleCommand(const String &rx) {
   } else if (cmd == "MEC,INS,OFF") {
     pos_b = RA_SERVO_B_LOCK;
     servo_b.write(pos_b);
+  } else if (cmd == "MEC,PAR,CW") {
+    for (size_t i = 0; i < 3; ++i)
+      controller.driver.write_speed(ServoDriver::IDS[i], 100);
+  } else if (cmd == "MEC,PAR,ACW") {
+    for (size_t i = 0; i < 3; ++i)
+      controller.driver.write_speed(ServoDriver::IDS[i], -100);
+  } else if (cmd == "MEC,PAR,OFF") {
+    for (size_t i = 0; i < 3; ++i)
+      controller.driver.write_speed(ServoDriver::IDS[i], 0);
 
     /* ========== RESET ========== */
   } else if (cmd == "RESET") {
@@ -1258,12 +1425,15 @@ void ConstructString() {
 
     << data.yaw
     << data.tof
+    << data.deploy
     // FRESH bitmask: bit0=IMU bit1=ALT bit2=BNO bit3=GPS bit4=INA bit5=TOF
     << (uint8_t) ((snap_imu << 0) | (snap_alt << 1) | (snap_bno << 2) | (snap_gps << 3) | (snap_ina << 4) | (snap_tof << 5));
 
-  // Atomic swap — lock held only for pointer exchange, not string building.
+  // Atomic update — lock held only for buffer mutation, not string building.
+  // sd_buf accumulates rows; CB_SDLogger drains it by copy-and-clear.
+  // tx_buf keeps only the latest frame (telemetry doesn't need history).
   mtx_buf.exec([&]() {
-    sd_buf = std::move(local_sd);
+    sd_buf += local_sd;
     tx_buf = std::move(local_tx);
   });
 }

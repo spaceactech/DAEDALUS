@@ -1,65 +1,48 @@
-#ifndef CUSTOM_EEPROM_H
-#define CUSTOM_EEPROM_H
-
 #include <Arduino.h>
-#include <EEPROM.h>
-#include "UserFSM.h"  // User's FSM States
 
-#define EEPROM_SIZE 64
+// ---------------------------------------------------------------------------
+// Backup SRAM (BKPSRAM) — STM32H725, 4 KB at 0x38800000
+// Direct memory read/write: no Flash erase, no blocking, ~microseconds.
+// Data is retained while VBAT is supplied.
+// ---------------------------------------------------------------------------
 
-/* ------------ EEPROM ADDRESSES ------------ */
+static constexpr uintptr_t BKPSRAM_BASE = 0x38800000UL;
 
-#define ADDR_PACKET_COUNT 0
-#define ADDR_ALT_REF      4
-#define ADDR_ACC          12
-#define ADDR_UTC          20
-#define ADDR_FSM_STATE    29
-#define ADDR_SERVO1       30
-#define ADDR_SERVO2       38
-#define ADDR_SERVO3       46
+// Magic word that marks a valid block (DAEDALUS → 0xDAEDA105)
+static constexpr uint32_t EEPROM_MAGIC = 0xDAEDA105u;
 
-/* ------------ VARIABLES ------------ */
+struct EEPROMStore {
+  uint32_t magic;           // validity sentinel
+  uint8_t  crc;             // CRC-8 over all bytes that follow
+  // ---- protected payload ----
+  char     utc[9];          // "HH:MM:SS\0"   UTC time from GPS
+  uint32_t packet_count;    // telemetry packet counter
+  uint8_t  state;           // UserState enum (FSM phase)
+  double   alt_ref;         // ground reference altitude (m MSL)
+  float    pos_a;           // deployment servo A position (deg)
+  float    pos_b;           // deployment servo B position (deg)
+  double   servo_target[3]; // paraglider servo target angles (deg)
+};
 
-uint32_t packet_count = 0;
-double   alt_ref      = 0;
-double   acc          = 0;
-char     utc[9]       = "00:00:00";
+static_assert(sizeof(EEPROMStore) <= 4096u, "EEPROMStore exceeds BKPSRAM size");
 
-double angle1 = 0.0;
-double angle2 = 0.0;
-double angle3 = 0.0;
-
-UserFSM fsm;
-
-uint8_t fsm_int = static_cast<uint8_t>(fsm.state());
-
-/* ------------ SAVE ALL ------------ */
-
-void savePersistent() {
-  EEPROM.put(ADDR_PACKET_COUNT, packet_count);
-  EEPROM.put(ADDR_ALT_REF, alt_ref);
-  EEPROM.put(ADDR_ACC, acc);
-  EEPROM.put(ADDR_UTC, utc);
-
-  EEPROM.put(ADDR_FSM_STATE, fsm_int);
-
-  EEPROM.put(ADDR_SERVO1, angle1);
-  EEPROM.put(ADDR_SERVO2, angle2);
-  EEPROM.put(ADDR_SERVO3, angle3);
-}
-/* ------------ LOAD ALL ------------ */
-
-void loadPersistent() {
-  EEPROM.get(ADDR_PACKET_COUNT, packet_count);
-  EEPROM.get(ADDR_ALT_REF, alt_ref);
-  EEPROM.get(ADDR_ACC, acc);
-  EEPROM.get(ADDR_UTC, utc);
-
-  EEPROM.get(ADDR_FSM_STATE, fsm_int);
-
-  EEPROM.get(ADDR_SERVO1, angle1);
-  EEPROM.get(ADDR_SERVO2, angle2);
-  EEPROM.get(ADDR_SERVO3, angle3);
+// CRC-8 / SMBUS — over payload region (everything after magic + crc)
+static uint8_t eeprom_crc8(const uint8_t *buf, size_t len) {
+  uint8_t crc = 0x00u;
+  for (size_t i = 0; i < len; ++i) {
+    crc ^= buf[i];
+    for (uint8_t b = 0; b < 8; ++b)
+      crc = (crc & 0x80u) ? static_cast<uint8_t>((crc << 1u) ^ 0x07u)
+                          : static_cast<uint8_t>(crc << 1u);
+  }
+  return crc;
 }
 
-#endif
+// Payload start: byte offset just past magic(4) + crc(1) = 5
+static constexpr size_t EEPROM_PAYLOAD_OFFSET = sizeof(uint32_t) + sizeof(uint8_t);
+
+// Call once at startup — enables BKPSRAM clock and write access
+inline void EEPROM_Init() {
+  __HAL_RCC_BKPRAM_CLK_ENABLE();
+  HAL_PWR_EnableBkUpAccess();
+}

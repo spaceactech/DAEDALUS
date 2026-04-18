@@ -21,14 +21,14 @@ constexpr double EARTH_RADIUS_M     = 6371000.0;
 constexpr double DISTANCE_TO_TARGET = 59.16;
 
 constexpr double SPOOL_RADIUS = 0.0109;
-constexpr double dL_max       = 0.2;  // rope pull limit **Change
+constexpr double dL_max       = 0.298758;  // rope pull limit **Change
 
 constexpr double ENC_TO_DEG = 360.0 / 4096.0;  // **Change
 
 // PID gains (tune later)
-constexpr double KP = 12.0 * 0.4;  //12
+constexpr double KP = 3.5;   // reduced from 4.8 to damp overshoot near target
 constexpr double KI = 0.0;
-constexpr double KD = 0.15;
+constexpr double KD = 0.35;  // reduced from 0.8 (too much jitter), still above original 0.15
 
 constexpr double at = 0.2;
 constexpr double av = 0.2;
@@ -80,19 +80,6 @@ struct ServoDriver {
   byte           servo_accels = 255;
   uint16_t       torque       = 500;
   EncoderTracker encoder_trackers[3]{};
-
-  // ---- Read multi-turn angle ----
-
-  double read_angle(uint8_t id) {
-    hlscl.syncReadPacketTx(const_cast<uint8_t *>(IDS), sizeof(IDS), SMS_STS_PRESENT_POSITION_L, sizeof(rxPacket));
-    hlscl.syncReadPacketRx(IDS[id], rxPacket);
-    int pos = hlscl.ReadPos(IDS[id]);
-
-    if (pos < 0)
-      return 0;
-
-    return encoder_trackers[id].update(pos);
-  }
 
   // ---- Apply speed to servo (wheel mode) ----
 
@@ -212,12 +199,6 @@ struct Guidance {
 
     delta[0] = target_velocity - velocity;
     delta[1] = target_heading - heading;
-
-    // if (delta[1] > 180)
-    //   delta[1] -= 360;
-
-    // if (delta[1] < -180)
-    //   delta[1] += 360;
 
     return delta;
   }
@@ -353,6 +334,7 @@ struct Controller {
 
   ServoDriver driver;
   Guidance    guidance;
+  double      last_angles[3] = {};
 
   void init_pid() {
     for (auto &pid: pid_controllers) {
@@ -366,25 +348,41 @@ struct Controller {
   static int16_t compute_speed(
     xcore::pid_controller_t<uint32_t> &pid,
     const double                      &target_angle,
-    const double                      &current_angle) {
-    double speed = pid.update(target_angle, current_angle, 0.02);
+    const double                      &current_angle,
+    double                             dt = 0.05) {
+    double speed = pid.update(target_angle, current_angle, dt);
     speed        = constrain(speed, -3500.0, 3500.0);
 
     return static_cast<int16_t>(speed);
   }
 
-  // ---- Main servo PID update ----
+  // ---- Read servo positions (blocking UART — run in a dedicated low-priority task) ----
+  // CB_Control must NOT call this directly; it should call servo_pid_update which uses
+  // the cached last_angles written here by CB_ReadServo.
 
-  void servo_pid_update(const numeric_vector<3> &target_angles) {
-    double  angles[3] = {};
+  void servo_read_positions() {
+    driver.hlscl.syncReadPacketTx(
+      const_cast<uint8_t *>(ServoDriver::IDS), sizeof(ServoDriver::IDS),
+      SMS_STS_PRESENT_POSITION_L, sizeof(driver.rxPacket));
+
+    for (size_t i = 0; i < 3; ++i) {
+      driver.hlscl.syncReadPacketRx(ServoDriver::IDS[i], driver.rxPacket);
+      int pos = driver.hlscl.ReadPos(ServoDriver::IDS[i]);
+      if (pos >= 0)
+        last_angles[i] = driver.encoder_trackers[i].update(pos);
+    }
+  }
+
+  // ---- PID update using cached last_angles — no UART reads, safe to call from any task ----
+
+  void servo_pid_update(const numeric_vector<3> &target_angles, double dt = 0.05) {
     int16_t speeds[3] = {};
 
     for (size_t i = 0; i < 3; ++i) {
-      angles[i] = driver.read_angle(i);
-      speeds[i] = compute_speed(pid_controllers[i], target_angles[i], angles[i]);
+      speeds[i] = compute_speed(pid_controllers[i], target_angles[i], last_angles[i], dt);
 
-      //deadband
-      if (abs(target_angles[i] - angles[i]) < 2)
+      //deadband — wide enough to prevent coast-through re-entry oscillation
+      if (abs(target_angles[i] - last_angles[i]) < 5)
         speeds[i] = 0;
     }
 

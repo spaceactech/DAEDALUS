@@ -1,117 +1,196 @@
-// --- Example ---
 #include <Arduino.h>
+#include <SPI.h>
 #include "Controlling.h"
-#include <lib_xcore>
-#include <xcore/dispatcher>
-#include <xcore/math_module>
 #include "UserPins.h"
+#include "UserSensors.h"
+#include "SparkFun_BNO08x_Arduino_Library.h"
+#include <SparkFun_u-blox_GNSS_v3.h>
+#include "config/Main/UserConfig.h"
 
+// ── Interfaces ──────────────────────────────────────────────────────────────
+TwoWire        i2c4(USER_GPIO_I2C4_SDA, USER_GPIO_I2C4_SCL);
 HardwareSerial ServoSerial(USER_GPIO_Half);
 
-// Timer start
-unsigned long startTime;
+// ── Sensors ──────────────────────────────────────────────────────────────────
+Altimeter_BMP581 baro(USER_GPIO_BMP581_NSS);
+BNO08x           bno;
+SFE_UBLOX_GNSS   gnss;
 
-double       heading_deg = 0.0;
-static float dt          = 0.02;
+// ── State ─────────────────────────────────────────────────────────────────────
+GPSCoordinate current_pos{};
+GPSCoordinate target_pos = {13.722992512087279, 100.51463610518176};
 
-// GPSCoordinate current = {38.3756417, -79.6073944};
-// GPSCoordinate target  = {38.3760167, -79.6078722};
-
-GPSCoordinate current = {13.72318890180544, 100.51601879382348};
-GPSCoordinate target  = {13.722796707782305, 100.51438233163296};
+double alt_msl   = 0;
+double alt_ref   = 0;
+double alt_agl   = 0;
+float  yaw_deg   = 0;
+double vel_n     = 0;
+double vel_e     = 0;
+bool   gps_fixed = false;
 
 Controller controller;
 
-void setup() {
-  Serial.begin(115200);
-  delay(4000);
+numeric_vector<3> servo_target_angles{};
 
-  ServoSerial.begin(1'000'000);
-  controller.driver.hlscl.pSerial = &ServoSerial;
-  delay(1000);
-
-  startTime = millis();  // start timer
-
-
-  // Initialize servo driver
-  controller.driver.hlscl.syncReadBegin(sizeof(ServoDriver::IDS), sizeof(controller.driver.rxPacket), 5);
-  for (size_t i = 0; i < sizeof(ServoDriver::IDS); ++i) {
-    controller.driver.hlscl.WheelMode(ServoDriver::IDS[i]);
-  }
-
-  Serial.println("Servo initialized");
-  controller.init_pid();
+// ── Helpers ───────────────────────────────────────────────────────────────────
+static void setup_spi() {
+  SPI.setMISO(USER_GPIO_SPI1_MISO);
+  SPI.setMOSI(USER_GPIO_SPI1_MOSI);
+  SPI.setSCLK(USER_GPIO_SPI1_SCK);
+  SPI.setSSEL(NC);
+  SPI.begin();
 }
 
-void loop() {
+static void setup_i2c() {
+  i2c4.setClock(100000);
+  i2c4.begin();
+}
 
-  controller.driver.write_speed(1, 100);
-  controller.driver.write_speed(2, -100);
-  controller.driver.write_speed(3, -100);
+static void read_baro() {
+  if (baro.read()) {
+    alt_msl = baro.altitude_m();
+    alt_agl = alt_msl - alt_ref;
+  }
+}
 
-  while (1) {
-    delay(1);
+static void read_gnss() {
+  if (gnss.checkUblox()) {
+    uint8_t siv     = gnss.getSIV();
+    gps_fixed       = siv > 0;
+    current_pos.lat = static_cast<double>(gnss.getLatitude()) * 1e-7;
+    current_pos.lon = static_cast<double>(gnss.getLongitude()) * 1e-7;
+    vel_n           = static_cast<double>(gnss.getNedNorthVel()) * 1e-3;
+    vel_e           = static_cast<double>(gnss.getNedEastVel()) * 1e-3;
+  }
+}
+
+static void read_mag() {
+  if (bno.wasReset())
+    bno.enableRotationVector();
+
+  if (bno.getSensorEvent() &&
+      bno.getSensorEventID() == SENSOR_REPORTID_ROTATION_VECTOR) {
+    double y = bno.getYaw() * 180.0 / PI;
+    yaw_deg  = static_cast<float>((y < 0) ? y + 360.0 : y);
+  }
+}
+
+// ── Setup ─────────────────────────────────────────────────────────────────────
+void setup() {
+  Serial.begin(115200);
+  delay(3000);
+  Serial.println("[TEST_PATH] boot");
+
+  setup_spi();
+  setup_i2c();
+
+  // Servo
+  ServoSerial.begin(1'000'000);
+  ServoSerial.setTimeout(2);
+  controller.driver.hlscl.pSerial = &ServoSerial;
+  controller.driver.hlscl.syncReadBegin(
+    sizeof(ServoDriver::IDS), sizeof(controller.driver.rxPacket), 5);
+  for (size_t i = 0; i < sizeof(ServoDriver::IDS); ++i)
+    controller.driver.hlscl.WheelMode(ServoDriver::IDS[i]);
+  controller.init_pid();
+  Serial.println("[SERVO] OK");
+
+  // BMP581
+  if (baro.begin())
+    Serial.println("[BARO] OK");
+  else
+    Serial.println("[BARO] FAIL");
+
+  // BNO08x
+  pinMode(BNO08X_RESET, OUTPUT);
+  digitalWrite(BNO08X_RESET, HIGH);
+  if (bno.begin(BNO08X_ADDR, i2c4, USER_GPIO_BNO_INT1, BNO08X_RESET)) {
+    bno.enableRotationVector();
+    Serial.println("[BNO] OK");
+  } else {
+    Serial.println("[BNO] FAIL");
   }
 
-  // -------------------------------
-  // Example sensor inputs
-  // -------------------------------
-  static double altitude = 5000.0;
-  altitude               = altitude - 5;
+  // u-blox M10S
+  pinMode(M10S_RESET, OUTPUT);
+  digitalWrite(M10S_RESET, HIGH);
+  delay(20);
+  digitalWrite(M10S_RESET, LOW);
+  delay(100);
+  digitalWrite(M10S_RESET, HIGH);
+  if (gnss.begin(i2c4, 0x42)) {
+    gnss.setI2COutput(COM_TYPE_UBX, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
+    gnss.setNavigationFrequency(10, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
+    gnss.setAutoPVT(true, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
+    gnss.setDynamicModel(DYN_MODEL_AIRBORNE4g, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
+    Serial.println("[GNSS] OK");
+  } else {
+    Serial.println("[GNSS] FAIL");
+  }
 
-  double vN = 7.5;
-  double vE = 10.0;
+  // Grab ground altitude reference (avg 20 samples)
+  Serial.println("[BARO] zeroing alt...");
+  double acc_alt = 0;
+  for (int i = 0; i < 20; ++i) {
+    delay(50);
+    if (baro.read())
+      acc_alt += baro.altitude_m();
+  }
+  alt_ref = acc_alt / 20.0;
+  Serial.print("[BARO] alt_ref = ");
+  Serial.println(alt_ref, 2);
 
-  int16_t speed1;
+  Serial.println("T(s),YAW,AGL,BEARING,DIST,FIX,TGT0,CUR0,TGT1,CUR1,TGT2,CUR2");
+}
 
-  // ---------------------------------------------------
-  // PID SERVO CONTROL
-  // ---------------------------------------------------
-  static uint16_t       interval = 50;
-  static xcore::NbDelay delay(interval, millis);
-  static xcore::NbDelay delay1(100, millis);
+// ── Loop ──────────────────────────────────────────────────────────────────────
+void loop() {
+  static xcore::NbDelay baro_tick(50, millis);
+  static xcore::NbDelay gnss_tick(100, millis);
+  static xcore::NbDelay mag_tick(100, millis);
+  static xcore::NbDelay pid_tick(50, millis);
+  static xcore::NbDelay print_tick(200, millis);
 
-  double            angles[3] = {};
-  numeric_vector<3> servo_target_angles;
+  static uint32_t pid_last_ms = millis();
 
-  delay([&]() {
-    servo_target_angles =
-      controller.guidance.update(
-        current,
-        target,
-        altitude,
-        vN,
-        vE,
-        0);
+  baro_tick([&]() { read_baro(); });
+  gnss_tick([&]() { read_gnss(); });
+  mag_tick([&]() { read_mag(); });
 
-    controller.servo_pid_update(servo_target_angles);
-    // // Read servo angle
-    // angles[0] = controller.driver.read_angle(0);
-    // angles[1] = controller.driver.read_angle(1);
-    // angles[2] = controller.driver.read_angle(2);
+  pid_tick([&]() {
+    uint32_t now = millis();
+    double   dt  = (now - pid_last_ms) * 0.001;
+    pid_last_ms  = now;
+    if (dt < 0.005) dt = 0.05;  // guard against zero on first tick
 
-    // // PID speed control
-    // speed1 = Controller::compute_speed(controller.pid_controllers[0], servo_target_angles[0], angles[0]);
-    // const int16_t speed2 = Controller::compute_speed(controller.pid_controllers[1], servo_target_angles[1], angles[1]);
-    // const int16_t speed3 = Controller::compute_speed(controller.pid_controllers[2], servo_target_angles[2], angles[2]);
-
-    // servo_pid_update()
+    if (gps_fixed) {
+      servo_target_angles = controller.guidance.update(current_pos, target_pos, alt_agl, vel_n, vel_e, yaw_deg);
+      controller.servo_pid_update(servo_target_angles, dt);
+    }
   });
 
-  // ---------------------------------------------------
-  // Serial Debug Output (Time Target Current)
-  // // ---------------------------------------------------
-  delay1([&]() {
-    double time_sec = (millis() - startTime) / 1000.0;
+  print_tick([&]() {
+    double bearing = Guidance::calculate_bearing(current_pos, target_pos, yaw_deg);
+    double dist    = Guidance::calculate_distance(current_pos, target_pos);
+    double t       = millis() * 0.001;
 
-    Serial.print(time_sec);
-    Serial.print(" ");
-
-    Serial.print("Control: ");
-    Serial.println(speed1);
-    Serial.print(servo_target_angles[2]);
-    Serial.print(" ");
-
-    Serial.println(angles[2]);
+    Serial.print(t, 2);
+    Serial.print(',');
+    Serial.print(yaw_deg, 1);
+    Serial.print(',');
+    Serial.print(alt_agl, 1);
+    Serial.print(',');
+    Serial.print(bearing, 1);
+    Serial.print(',');
+    Serial.print(dist, 4);
+    Serial.print(',');
+    Serial.print(gps_fixed ? 1 : 0);
+    for (size_t i = 0; i < 3; ++i) {
+      Serial.print(',');
+      Serial.print(servo_target_angles[i], 2);
+      Serial.print(',');
+      Serial.print(controller.last_angles[i], 2);
+    }
+    Serial.println();
   });
 }

@@ -5,10 +5,10 @@
 #include <math.h>
 #include "Controlling.h"
 
-GPSCoordinate target_location  = {13.722980431441558, 100.51530794838496};
+GPSCoordinate target_location = {13.722992512087279, 100.51463610518176};
 
 /* Telemetry control */
-bool telemetry_enabled = true; // need to false
+bool telemetry_enabled = true;  // need to false
 
 /* Simulation mode */
 bool     simEnabled   = false;
@@ -28,8 +28,8 @@ struct DataMemory {
   SensorIMU::Data       imu[RA_NUM_IMU];
   SensorAltimeter::Data altimeter[RA_NUM_ALTIMETER];
 
-  char mode[4] = "F";
-
+  char       mode[4] = "F";
+  
   uint32_t timestamp_epoch;
   uint32_t timestamp_us{};
 
@@ -65,7 +65,6 @@ struct DataMemory {
   bool gps_fresh = false;
   bool ina_fresh = false;
   bool tof_fresh = false;
-
 };
 
 struct valid {
@@ -73,7 +72,7 @@ struct valid {
   bool bno;
   bool m10s;
   bool tof;
-  bool sd;
+  bool sd = false;
 } pvalid;
 
 extern void ReadINA();
