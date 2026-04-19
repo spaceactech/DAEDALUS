@@ -25,6 +25,9 @@ constexpr bool RA_LED_ENABLED = true;
 // USB Debug
 constexpr bool RA_USB_DEBUG_ENABLED = true;
 
+constexpr double MAGNETIC_DECLINATION  = - 16.03;
+constexpr double BNO_MOUNT_OFFSET      = -263.23;  // PCB mounting correction (degrees)
+
 // Stack High Water Mark (define to enable per-thread RAM reporting via serial)
 #define RA_STACK_HWM_ENABLED
 
@@ -97,8 +100,8 @@ constexpr int RA_SERVO_MIN = 500;                                // us PWM
 constexpr int RA_SERVO_MAX = 2450;                               // us PWM
 constexpr int RA_SERVO_CEN = (RA_SERVO_MIN + RA_SERVO_MAX) / 2;  // us PWM
 
-constexpr float RA_SERVO_A_RELEASE = 180;  // deg
-constexpr float RA_SERVO_A_LOCK    = 115;  // deg
+constexpr float RA_SERVO_A_RELEASE = 0;  // deg
+constexpr float RA_SERVO_A_LOCK    = 65;  // deg
 
 constexpr float RA_SERVO_B_RELEASE = 180;  // deg
 constexpr float RA_SERVO_B_LOCK    = 25;   // deg

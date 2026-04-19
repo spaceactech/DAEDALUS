@@ -5,7 +5,7 @@
 #include <math.h>
 #include "Controlling.h"
 
-GPSCoordinate target_location = {13.722992512087279, 100.51463610518176};
+GPSCoordinate target_location = {13.723121808539261, 100.51574043824678};
 
 /* Telemetry control */
 bool telemetry_enabled = true;  // need to false
@@ -51,6 +51,7 @@ struct DataMemory {
   float pitch;
   float roll;
   float heading;
+  uint8_t yaw_accuracy = 0;  // 0=unreliable … 3=high (BNO08x mag calibration)
 
   bool deploy;
   char cmd_echo[8] = "ECHO";

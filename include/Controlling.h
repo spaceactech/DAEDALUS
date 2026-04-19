@@ -411,7 +411,7 @@ struct Controller {
         int16_t speed   = 0;
 
         // Deadband
-        if (std::abs(err) >= 6.0) {
+        if (std::abs(err) >= 8.0) {
           bool moving_wrong = (err > 0 && motion < 0) || (err < 0 && motion > 0);
 
           if (moving_wrong && std::abs(last_speeds[i]) > 100) {

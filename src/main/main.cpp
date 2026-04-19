@@ -381,7 +381,7 @@ void CB_ReadIMU(void *) {
 
     const double &ax = data.imu[0].acc_x;
     const double &ay = data.imu[0].acc_y;
-    const double &az = data.imu[0].acc_z;
+    const double &az = data.imu[0].acc_z * -1.0;
 
     // Total acceleration
     acc = std::sqrt(std::abs(ax * ax) + std::abs(ay * ay) + std::abs(az * az));
@@ -810,7 +810,7 @@ void CB_EEPROMWrite(void *) {
 /* END USER THREADS */
 
 void UserThreads() {
-  hal::rtos::scheduler.create(CB_EvalFSM, {.name = "CB_EvalFSM", .stack_size = 2048, .priority = osPriorityRealtime});
+  // hal::rtos::scheduler.create(CB_EvalFSM, {.name = "CB_EvalFSM", .stack_size = 2048, .priority = osPriorityRealtime});
   hal::rtos::scheduler.create(CB_Control, {.name = "CB_Control", .stack_size = 4096, .priority = osPriorityNormal});
   hal::rtos::scheduler.create(CB_INSDeploy, {.name = "CB_INSDeploy", .stack_size = 2048, .priority = osPriorityHigh});
 
@@ -902,7 +902,7 @@ void setup() {
     // Zero altitude reference
     delay(4000);
     ReadAltimeter();
-    alt_ref = data.altimeter[0].altitude_m;
+    alt_ref = data.altimeter[0].altitude_m - 70.0;
   }
 
   led.setPixelColor(1, led.Color(0, 0, 255));
@@ -1146,10 +1146,21 @@ void ReadMAG() {
 
     if (bno.getSensorEvent() == true) {
       if (bno.getSensorEventID() == SENSOR_REPORTID_ROTATION_VECTOR) {
-        data.roll      = bno.getRoll() * 180.0 / PI;
-        data.pitch     = bno.getPitch() * 180.0 / PI;
-        double yaw     = bno.getYaw() * 180.0 / PI;
-        data.yaw       = (yaw < 0) ? yaw + 360.0 : yaw;
+        data.roll  = bno.getRoll() * 180.0 / PI;
+        data.pitch = bno.getPitch() * 180.0 / PI;
+
+        double yaw = 90.0 - bno.getYaw() * 180.0 / PI;
+        data.yaw   = fmod(yaw + BNO_MOUNT_OFFSET + MAGNETIC_DECLINATION + 360.0, 360.0);
+
+        // Save calibration to the sensor's internal flash once fully calibrated.
+        // Save only at full accuracy (3) so the stored DCD is stable.
+        // Saves once per session; subsequent boots restore it automatically.
+        static bool cal_saved = false;
+        if (!cal_saved && bno.getQuatAccuracy() == 3) {
+          bno.saveCalibration();
+          cal_saved = true;
+        }
+
         data.bno_fresh = true;
       }
     }
@@ -1295,6 +1306,14 @@ void HandleCommand(const String &rx) {
   } else if (cmd == "MEC,PAR,OFF") {
     for (size_t i = 0; i < 3; ++i)
       controller.driver.write_speed(ServoDriver::IDS[i], 0);
+
+    /* ========== SERVO ========== */
+  } else if (cmd.substring(0, 8) == "SERVO,A,") {
+    pos_a = constrain(cmd.substring(8).toFloat(), 0.0f, 180.0f);
+    servo_a.write(pos_a);
+  } else if (cmd.substring(0, 8) == "SERVO,B,") {
+    pos_b = constrain(cmd.substring(8).toFloat(), 0.0f, 180.0f);
+    servo_b.write(pos_b);
 
     /* ========== RESET ========== */
   } else if (cmd == "RESET") {
