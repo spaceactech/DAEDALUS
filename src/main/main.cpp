@@ -27,6 +27,7 @@
 #include "UserFSM.h"      // User's FSM States
 #include "Controlling.h"
 #include "custom_EEPROM.h"
+#include "BNO086Cal.h"
 /* END INCLUDE USER'S IMPLEMENTATIONS */
 
 /* BEGIN INCLUDE MAIN */
@@ -44,6 +45,7 @@ INA236            ina(0x40, &i2c4);
 sh2_SensorValue_t sensorValue;
 SFEVL53L1X        tof(i2c4);
 BNO08x            bno;
+BNO086Calibrator  bno_cal;
 
 Adafruit_NeoPixel led(2, USER_GPIO_LED, NEO_GRB + NEO_KHZ800);
 
@@ -158,6 +160,30 @@ hal::rtos::mutex_t mtx_uart;
 hal::rtos::mutex_t mtx_buf;  // guards tx_buf and sd_buf
 hal::rtos::mutex_t mtx_nav;  // guards nav_state — held for microseconds only
 
+/* BEGIN USER PRIVATE FUNCTIONS */
+uint32_t LoggerInterval() {
+  switch (fsm.state()) {
+    case UserState::STARTUP:
+    case UserState::IDLE_SAFE:
+      return RA_SDLOGGER_INTERVAL_IDLE;
+
+    case UserState::LAUNCH_PAD:
+      return RA_SDLOGGER_INTERVAL_SLOW;
+
+    case UserState::ASCENT:
+    case UserState::APOGEE:
+    case UserState::DESCENT:
+    case UserState::PROBE_REALEASE:
+    case UserState::PAYLOAD_REALEASE:
+      return RA_SDLOGGER_INTERVAL_FAST;
+
+    case UserState::LANDED:
+    default:
+      return RA_SDLOGGER_INTERVAL_IDLE;
+  }
+}
+/* END USER PRIVATE FUNCTIONS */
+
 // Navigation state written by GNSS/MAG tasks, read by CB_Control.
 // Kept separate from mtx_i2c so CB_Control never blocks on an I2C transaction.
 struct NavState {
@@ -184,6 +210,7 @@ struct StackHWM {
   UBaseType_t ins       = 0;
   UBaseType_t neo       = 0;
   UBaseType_t control   = 0;
+  UBaseType_t sdlog     = 0;
   UBaseType_t debug     = 0;
 } stack_hwm;
 #endif
@@ -357,6 +384,12 @@ void UserSetupSD() {
   SD.setCK(USER_GPIO_SDIO_CK);
   pvalid.sd = SD.begin();
 
+  // SDMMC1 IRQ defaults to priority 0 (above FreeRTOS configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY).
+  // Any FreeRTOS API called from within the SDMMC ISR at priority 0 corrupts
+  // scheduler internals.  Lower it here so the ISR sits below the syscall ceiling.
+  HAL_NVIC_SetPriority(SDMMC1_IRQn, 6, 0);
+  HAL_NVIC_EnableIRQ(SDMMC1_IRQn);
+
   if (pvalid.sd) {
     fs_sd.find_file_name(RA_FILE_NAME, RA_FILE_EXT);
     fs_sd.open_one<FsMode::WRITE>();
@@ -401,13 +434,10 @@ void CB_ReadAltimeter(void *) {
 #endif
     mtx_spi.exec(ReadAltimeter);
 
-    // Update KF with measurement
-    if (!simActivated && !simEnabled) {
-      filter_alt.kf.update({data.altimeter[0].altitude_m});
-
-      // Update altitude above ground
+    // Update KF with measurement (real or simulated — altitude_m is already set correctly)
+    filter_alt.kf.update({data.altimeter[0].altitude_m});
+    if (!simActivated && !simEnabled)
       alt_agl = data.altimeter[0].altitude_m - alt_ref;
-    }
 
     if (alt_agl > apogee_raw)
       apogee_raw = alt_agl;
@@ -581,10 +611,13 @@ void CB_ConstructData(void *) {
 }
 
 void CB_SDLogger(void *) {
-  xcore::NbDelay write_delay(RA_INTERVAL_CONSTRUCT, millis);
+  xcore::NbDelay write_delay(100ul, millis);
   xcore::NbDelay flush_delay(5000ul, millis);
 
   hal::rtos::interval_loop(1ul, [&]() -> void {
+#ifdef RA_STACK_HWM_ENABLED
+    stack_hwm.sdlog = uxTaskGetStackHighWaterMark(NULL);
+#endif
     write_delay([&]() {
       String snap;
       mtx_buf.exec([&]() {
@@ -601,16 +634,8 @@ void CB_SDLogger(void *) {
   });
 }
 
-void CB_SDSave(void *) {
-  hal::rtos::interval_loop(1000ul, [&]() -> void {
-    mtx_sdio.exec([&]() -> void {
-      fs_sd.file().flush();
-    });
-  });
-}
-
 void CB_Transmit(void *) {
-  hal::rtos::interval_loop(1000ul, [&]() -> void {
+  hal::rtos::interval_loop(200ul, [&]() -> void {
 #ifdef RA_STACK_HWM_ENABLED
     stack_hwm.transmit = uxTaskGetStackHighWaterMark(NULL);
 #endif
@@ -699,6 +724,7 @@ void CB_DebugLogger(void *) {
         { "INS",       stack_hwm.ins, 1024}, // 4096 B — commented out
         { "NEO",       stack_hwm.neo,  256}, // 1024 B
         {"CTRL",   stack_hwm.control, 1024}, // 4096 B — commented out
+        {  "SD",     stack_hwm.sdlog, 512}, // 4096 B
         { "DBG",     stack_hwm.debug,  512}, // 2048 B
       };
       uint32_t total_used = 0, total_alloc = 0;
@@ -831,10 +857,9 @@ void UserThreads() {
 
   hal::rtos::scheduler.create(CB_ConstructData, {.name = "CB_ConstructData", .stack_size = 2048, .priority = osPriorityNormal});
 
-  // if (pvalid.sd) {
-  //   hal::rtos::scheduler.create(CB_SDLogger, {.name = "CB_SDLogger", .stack_size = 4096, .priority = osPriorityNormal});
-  //   // hal::rtos::scheduler.create(CB_SDSave, {.name = "CB_SDSave", .stack_size = 4096, .priority = osPriorityNormal});
-  // }
+  if (pvalid.sd) {
+    hal::rtos::scheduler.create(CB_SDLogger, {.name = "CB_SDLogger", .stack_size = 2048, .priority = osPriorityNormal});
+  }
 
   hal::rtos::scheduler.create(CB_EEPROMWrite, {.name = "CB_EEPROMWrite", .stack_size = 2048, .priority = osPriorityLow});
 
@@ -858,7 +883,7 @@ void setup() {
   UserSetupSPI();
   UserSetupI2C();
   UserSetupSensor();
-  // UserSetupSD();
+  EEPROM_Init();
   /* END GPIO AND INTERFACES SETUP */
 
   /* BEGIN FILTERS SETUP */
@@ -887,12 +912,8 @@ void setup() {
   }
   /* END SENSORS SETUP */
 
-
   Serial.println(printable_sensor_status(sensors_health.altimeter[0]));
   Serial.println(printable_sensor_status(sensors_health.imu[0]));
-
-  // Enable Backup SRAM clock + write access (must be done before read or write)
-  EEPROM_Init();
 
   // Restore last flight state from EEPROM (only if data was previously defined)
   if constexpr (RA_EEPROM_READ_ENABLED) {
@@ -905,9 +926,14 @@ void setup() {
     alt_ref = data.altimeter[0].altitude_m - 70.0;
   }
 
+  bno_cal.init(static_cast<float>(BNO_MOUNT_OFFSET));
+  bno_cal.autoNorthLock(bno);
+
   led.setPixelColor(1, led.Color(0, 0, 255));
   led.setPixelColor(2, led.Color(0, 0, 255));
   led.show();
+
+  UserSetupSD();
 
   /* BEGIN SYSTEM/KERNEL SETUP */
   hal::rtos::scheduler.initialize();
@@ -1091,13 +1117,17 @@ void ReadAltimeter() {
     if (sensors_health.altimeter[i] != SensorStatus::SENSOR_OK ||
         !altimeter[i]->read())
       continue;
-    else if (simActivated && simEnabled) {
-      alt_agl = altitude_msl_from_pressure(simPressure / 100.F, qnh_hpa);
+
+    if (simActivated && simEnabled) {
+      double sim_alt_msl             = altitude_msl_from_pressure(simPressure / 100.F, qnh_hpa);
+      data.altimeter[i].altitude_m   = sim_alt_msl;
+      data.altimeter[i].pressure_hpa = simPressure / 100.F;
+      alt_agl                        = sim_alt_msl - alt_ref;
     } else {
       data.altimeter[i].pressure_hpa = altimeter[i]->pressure_hpa();
+      data.altimeter[i].altitude_m   = altimeter[i]->altitude_m();
     }
 
-    data.altimeter[i].altitude_m  = altimeter[i]->altitude_m();
     data.altimeter[i].temperature = altimeter[i]->temperature();
     data.alt_fresh                = true;
   }
@@ -1139,31 +1169,42 @@ void ReadINA() {
 }
 
 void ReadMAG() {
-  if (pvalid.bno) {
-    if (bno.wasReset()) {
-      bno.enableRotationVector();
+  if (!pvalid.bno) return;
+
+  if (bno.wasReset()) {
+    RecoverI2C4();
+    hal::rtos::delay_ms(250);
+    bno.enableRotationVector();
+    if (bno_cal.isCollecting()) bno.enableMagnetometer(10);
+  }
+
+  if (!bno.getSensorEvent()) return;
+
+  // Feed raw mag samples into the calibrator while a collection is in progress.
+  // update() returns true when the 30-second window closes (sensors already
+  // switched back to rotation vector inside _finalize()).
+  bno_cal.update(bno);
+
+  if (bno.getSensorEventID() == SENSOR_REPORTID_ROTATION_VECTOR) {
+    data.roll  = bno.getRoll() * 180.0 / PI;
+    data.pitch = bno.getPitch() * 180.0 / PI;
+
+    // raw_yaw: ENU convention from BNO086 (CCW-positive, 0 = east)
+    // Convert to CW-from-north (compass bearing) with the dynamic mount offset.
+    const double raw_yaw = 90.0 - bno.getYaw() * 180.0 / PI;
+    data.yaw             = fmod(raw_yaw + bno_cal.mount_offset + MAGNETIC_DECLINATION + 360.0, 360.0);
+
+    // Track accuracy for north-lock readout
+    data.yaw_accuracy = bno.getQuatAccuracy();
+
+    // Auto-save BNO086 DCD once fully calibrated (once per session).
+    static bool cal_saved = false;
+    if (!cal_saved && data.yaw_accuracy == 3 && !bno_cal.isCollecting()) {
+      bno.saveCalibration();
+      cal_saved = true;
     }
 
-    if (bno.getSensorEvent() == true) {
-      if (bno.getSensorEventID() == SENSOR_REPORTID_ROTATION_VECTOR) {
-        data.roll  = bno.getRoll() * 180.0 / PI;
-        data.pitch = bno.getPitch() * 180.0 / PI;
-
-        double yaw = 90.0 - bno.getYaw() * 180.0 / PI;
-        data.yaw   = fmod(yaw + BNO_MOUNT_OFFSET + MAGNETIC_DECLINATION + 360.0, 360.0);
-
-        // Save calibration to the sensor's internal flash once fully calibrated.
-        // Save only at full accuracy (3) so the stored DCD is stable.
-        // Saves once per session; subsequent boots restore it automatically.
-        static bool cal_saved = false;
-        if (!cal_saved && bno.getQuatAccuracy() == 3) {
-          bno.saveCalibration();
-          cal_saved = true;
-        }
-
-        data.bno_fresh = true;
-      }
-    }
+    data.bno_fresh = true;
   }
 }
 
@@ -1246,7 +1287,7 @@ void HandleCommand(const String &rx) {
   cmd.trim();
 
   strncpy(data.cmd_echo, cmd.c_str(), sizeof(data.cmd_echo) - 1);
-  data.cmd_echo[sizeof(data.cmd_echo) - 1] = '\0';
+  data.cmd_echo[sizeof(data.cmd_echo) - 1] = '\0';  // sizeof = 16, safe for all commands
 
   /* ========== CX ========== */
   if (cmd == "CX,ON") {
@@ -1258,11 +1299,13 @@ void HandleCommand(const String &rx) {
   } else if (cmd == "SIM,ENABLE") {
     simEnabled = true;
   } else if (cmd == "SIM,ACTIVATE") {
-    if (simEnabled) {
-      simActivated = true;
-      data.mode[0] = 'S';
-      data.mode[1] = '\0';
+    if (!simEnabled) {
+      ++last_nack;
+      return;
     }
+    simActivated = true;
+    data.mode[0] = 'S';
+    data.mode[1] = '\0';
   } else if (cmd == "SIM,DISABLE") {
     simEnabled   = false;
     simActivated = false;
@@ -1271,13 +1314,60 @@ void HandleCommand(const String &rx) {
 
     /* ========== SIMP ========== */
   } else if (cmd.substring(0, 5) == "SIMP,") {
-    if (simEnabled && simActivated)
-      simPressure = cmd.substring(5).toInt();
+    if (!simEnabled || !simActivated) {
+      ++last_nack;
+      return;
+    }
+    int val = cmd.substring(5).toInt();
+    if (val > 0) simPressure = static_cast<uint32_t>(val);
 
     /* ========== CAL ========== */
   } else if (cmd == "CAL") {
     ReadAltimeter();
     alt_ref = data.altimeter[0].altitude_m;
+
+    /* ========== CAL,MAG — BNO086 magnetometer offset calibration ========== */
+  } else if (cmd == "CAL,MAG,START") {
+    // Begin 30-second hard-iron offset measurement.
+    // Rotate sensor through all orientations while this runs.
+    if (!pvalid.bno) {
+      ++last_nack;
+      return;
+    }
+    mtx_i2c.exec([&]() { bno_cal.startMagCollection(bno); });
+
+  } else if (cmd == "CAL,NORTH") {
+    // Lock current heading as 0° (magnetic north).
+    // Send this command while the sensor is pointing steadily to magnetic north.
+    if (!pvalid.bno) {
+      ++last_nack;
+      return;
+    }
+    if (!bno_cal.isAwaitingNorth() && !bno_cal.isIdle()) {
+      ++last_nack;
+      return;
+    }
+    // Capture raw yaw (before any offset correction) from the latest sensor read.
+    // raw_yaw = 90 - bno.getYaw_deg, which is what ReadMAG uses before adding offsets.
+    float raw_yaw = 0.f;
+    mtx_i2c.exec([&]() {
+      // Trigger a fresh event so getYaw() reflects current orientation.
+      if (bno.getSensorEvent() &&
+          bno.getSensorEventID() == SENSOR_REPORTID_ROTATION_VECTOR) {
+        raw_yaw = 90.0f - bno.getYaw() * 180.0f / PI;
+      }
+    });
+    bno_cal.setNorthLock(raw_yaw);
+
+  } else if (cmd == "CAL,MAG,STATUS") {
+    if (!pvalid.bno) {
+      ++last_nack;
+      return;
+    }
+    mtx_i2c.exec([&]() { bno_cal.printStatus(bno); });
+
+  } else if (cmd == "CAL,MAG,RESET") {
+    bno_cal.reset(static_cast<float>(BNO_MOUNT_OFFSET));
 
     /* ========== SET ========== */
   } else if (cmd.substring(0, 12) == "SET,MAIN_ALT") {

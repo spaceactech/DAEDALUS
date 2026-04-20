@@ -25,8 +25,8 @@ constexpr bool RA_LED_ENABLED = true;
 // USB Debug
 constexpr bool RA_USB_DEBUG_ENABLED = true;
 
-constexpr double MAGNETIC_DECLINATION  = - 16.03;
-constexpr double BNO_MOUNT_OFFSET      = -263.23;  // PCB mounting correction (degrees)
+constexpr double MAGNETIC_DECLINATION = 0.0;
+constexpr double BNO_MOUNT_OFFSET     = 45.0;;  // PCB mounting correction (degrees)
 
 // Stack High Water Mark (define to enable per-thread RAM reporting via serial)
 #define RA_STACK_HWM_ENABLED
@@ -45,7 +45,7 @@ constexpr bool RA_RETAIN_DEPLOYMENT_ENABLED = true;
 constexpr bool RA_EEPROM_READ_ENABLED = false;
 
 // EEPROM write interval (ms)
-constexpr uint32_t RA_EEPROM_WRITE_INTERVAL = 10000ul;  // 5 s
+constexpr uint32_t RA_EEPROM_WRITE_INTERVAL = 10000ul;  // 10 s
 
 // Auto-Zero Altitude
 constexpr bool RA_AUTO_ZERO_ALT_ENABLED = false;
@@ -65,7 +65,7 @@ constexpr uint32_t RA_INTERVAL_ALTIMETER_READING = 25ul;  // ms
 constexpr uint32_t RA_INTERVAL_GNSS_READING = 100ul;  // ms
 
 // GNSS Reading
-constexpr uint32_t RA_INTERVAL_MAG_READING = 100ul;  // ms
+constexpr uint32_t RA_INTERVAL_MAG_READING = 50ul;  // ms
 
 // GNSS Reading
 constexpr uint32_t RA_INTERVAL_TOF_READING = 100ul;  // ms
@@ -100,7 +100,7 @@ constexpr int RA_SERVO_MIN = 500;                                // us PWM
 constexpr int RA_SERVO_MAX = 2450;                               // us PWM
 constexpr int RA_SERVO_CEN = (RA_SERVO_MIN + RA_SERVO_MAX) / 2;  // us PWM
 
-constexpr float RA_SERVO_A_RELEASE = 0;  // deg
+constexpr float RA_SERVO_A_RELEASE = 0;   // deg
 constexpr float RA_SERVO_A_LOCK    = 65;  // deg
 
 constexpr float RA_SERVO_B_RELEASE = 180;  // deg
@@ -121,7 +121,7 @@ constexpr uint32_t RA_TIME_TO_APOGEE_MAX = 20 * 1000ul;  // ms
 
 // Launch acceleration: acc. threshold (GT)
 constexpr double RA_LAUNCH_ACC = 9.81 * 30.0;  // 9.81 m/s^2 (g)
-constexpr double RA_LAUNCH_ALT = 50.0;        // m
+constexpr double RA_LAUNCH_ALT = 50.0;         // m
 
 // Launch acceleration detection period
 constexpr uint32_t RA_LAUNCH_TON     = 200ul;  // ms
@@ -139,11 +139,11 @@ constexpr uint32_t RA_APOGEE_SAMPLES = RA_APOGEE_TON / RA_INTERVAL_FSM_EVAL;
 
 // Drogue Descent Theoretical Velocity
 constexpr double RA_DROGUE_VEL = 14.0;  // m/s
-constexpr double RA_MAIN_VEL = 5.0;  // m/s
+constexpr double RA_MAIN_VEL   = 5.0;   // m/s
 
 // Main Deployment Event Altitude: altitude threshold (LT)
 constexpr double RA_MAIN_ALT_RAW = RA_APOGEE_ALT * 0.8;  // m
-constexpr double RA_INS_ALT_RAW  = 2.0;    // m
+constexpr double RA_INS_ALT_RAW  = 2.0;                  // m
 
 // Safeguard overspeed threshold to main deployment
 constexpr double RA_MAIN_OVERSPEED_VEL = RA_DROGUE_VEL * 1.5;
@@ -194,7 +194,6 @@ constexpr uint32_t RA_AUTOZERO_SAMPLES = RA_AUTOZERO_TON / RA_INTERVAL_AUTOZERO;
 constexpr uint32_t RA_SDLOGGER_INTERVAL_IDLE     = 1000ul;  // 1 Hz
 constexpr uint32_t RA_SDLOGGER_INTERVAL_SLOW     = 200ul;   // 5 Hz
 constexpr uint32_t RA_SDLOGGER_INTERVAL_FAST     = 100ul;   // 10 Hz
-constexpr uint32_t RA_SDLOGGER_INTERVAL_REALTIME = 50ul;    // 20 Hz
 
 constexpr uint32_t DEPLOY_SHOULD_ACTIVATE = 40 * 60 * 1000ul;
 

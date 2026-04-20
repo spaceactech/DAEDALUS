@@ -4,7 +4,13 @@
       "Bash(pio device *)",
       "Bash(echo \"PID: $!\")",
       "PowerShell([System.IO.Ports.SerialPort]::GetPortNames\\(\\))",
-      "Bash(git checkout *)"
+      "Bash(git checkout *)",
+      "Bash(pio run *)",
+      "PowerShell(cd \"d:\\\\PlatformIO\\\\Firmware-DAEDALUS\"; & \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run -e main 2>&1 | Select-Object -Last 60)",
+      "PowerShell(cd \"d:\\\\PlatformIO\\\\Firmware-DAEDALUS\"; & \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run -e main -t upload 2>&1 | Select-Object -Last 20)",
+      "PowerShell(cd \"d:\\\\PlatformIO\\\\Firmware-DAEDALUS\"; & \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" device monitor --port COM3 --baud 460800 2>&1 | Select-Object -First 80)",
+      "PowerShell(& \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" device list 2>&1)",
+      "PowerShell(cd \"d:\\\\PlatformIO\\\\Firmware-DAEDALUS\"; & \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" device monitor --port COM14 --baud 460800 2>&1 | Select-Object -First 60)"
     ],
     "additionalDirectories": [
       "d:\\PlatformIO\\Firmware-DAEDALUS\\src"

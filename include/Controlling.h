@@ -21,8 +21,11 @@ constexpr double EARTH_RADIUS_M     = 6371000.0;
 constexpr double DISTANCE_TO_TARGET = 59.16;
 
 constexpr double SPOOL_RADIUS = 0.0109;
-constexpr double dL_max       = 0.298758;
-;  // rope pull limit **Change
+
+// rope pull limit ΔL=L±L2−2sL2−s2​sinα​
+// constexpr double dL_max       = 0.298758; //30 degree
+constexpr double dL_max       = 0.34714423; //35 degree
+ 
 
 constexpr double ENC_TO_DEG = 360.0 / 4096.0;  // **Change
 
@@ -105,10 +108,10 @@ struct ServoDriver {
 
   void write_speed(uint8_t id, int16_t speed) {
     int ack = hlscl.WriteSpe(id, speed, servo_accels, torque);
-    Serial.print("ACK(");
-    Serial.print(id);
-    Serial.print("): ");
-    Serial.println(ack);
+    // Serial.print("ACK(");
+    // Serial.print(id);
+    // Serial.print("): ");
+    // Serial.println(ack);
   }
 };
 
