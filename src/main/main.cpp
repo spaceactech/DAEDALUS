@@ -76,6 +76,7 @@ double   alt_agl;  // Altitude above ground
 double   apogee_raw;
 uint32_t packet_count{};
 double   main_alt_threshold = RA_MAIN_ALT_COMPENSATED;  // Runtime-adjustable via SET,MAIN_ALT command
+uint32_t tx_interval_ms    = 200;                       // Runtime-adjustable via SET,TX_RATE command
 /* END PERSISTENT STATE */
 
 /* BEGIN DATA MEMORY */
@@ -633,17 +634,17 @@ void CB_SDLogger(void *) {
 }
 
 void CB_Transmit(void *) {
-  hal::rtos::interval_loop(200ul, [&]() -> void {
+  hal::rtos::interval_loop(tx_interval_ms,[&]() -> TickType_t { return tx_interval_ms; }, [&]() -> void {
 #ifdef RA_STACK_HWM_ENABLED
-    stack_hwm.transmit = uxTaskGetStackHighWaterMark(NULL);
+      stack_hwm.transmit = uxTaskGetStackHighWaterMark(NULL);
 #endif
-    if (telemetry_enabled) {
-      String snap;
-      mtx_buf.exec([&]() { snap = tx_buf; });
-      mtx_uart.exec([&]() { Xbee.println(snap); });
-      packet_count++;
-    }
-  });
+      if (telemetry_enabled) {
+        String snap;
+        mtx_buf.exec([&]() { snap = tx_buf; });
+        mtx_uart.exec([&]() { Xbee.println(snap); });
+        packet_count++;
+      }
+    });
 }
 
 void CB_Control(void *) {
@@ -763,9 +764,11 @@ void EvalINSDeploy() {
   static xcore::sampler_t<RA_INS_SAMPLES, double> sampler_baro_near;
   static xcore::sampler_t<RA_INS_SAMPLES, double> sampler_baro_critical;
 
-  if (sampler_tof.capacity() == 0) {
+  static bool initialized = false;
+  if (!initialized) {
+    initialized = true;
     sampler_tof.set_capacity(RA_INS_SAMPLES, /*recount*/ false);
-    sampler_tof.set_threshold(RA_INS_ALT_COMPENSATED, /*recount*/ false);
+    sampler_tof.set_threshold(RA_INS_ALT_RAW, /*recount*/ false);
 
     sampler_baro_near.set_capacity(RA_INS_SAMPLES, /*recount*/ false);
     sampler_baro_near.set_threshold(15.0, /*recount*/ false);
@@ -834,7 +837,7 @@ void CB_EEPROMWrite(void *) {
 /* END USER THREADS */
 
 void UserThreads() {
-  // hal::rtos::scheduler.create(CB_EvalFSM, {.name = "CB_EvalFSM", .stack_size = 2048, .priority = osPriorityRealtime});
+  hal::rtos::scheduler.create(CB_EvalFSM, {.name = "CB_EvalFSM", .stack_size = 2048, .priority = osPriorityRealtime});
   hal::rtos::scheduler.create(CB_Control, {.name = "CB_Control", .stack_size = 4096, .priority = osPriorityNormal});
   hal::rtos::scheduler.create(CB_INSDeploy, {.name = "CB_INSDeploy", .stack_size = 2048, .priority = osPriorityHigh});
 
@@ -921,7 +924,7 @@ void setup() {
     // Zero altitude reference
     delay(4000);
     ReadAltimeter();
-    alt_ref = data.altimeter[0].altitude_m - 70.0;
+    alt_ref = data.altimeter[0].altitude_m;
   }
 
   bno_cal.init(static_cast<float>(BNO_MOUNT_OFFSET));
@@ -1055,6 +1058,7 @@ void EvalFSM() {
 
       if ((cond_timeout) ||
           (cond_min_time && cond_alt_lower)) {
+        servo_a.write(pos_a + 5);
         ActivateDeployment(0);
         fsm.transfer(UserState::PAYLOAD_REALEASE);
       }
@@ -1371,6 +1375,11 @@ void HandleCommand(const String &rx) {
   } else if (cmd.substring(0, 12) == "SET,MAIN_ALT") {
     double raw         = cmd.substring(13).toDouble();
     main_alt_threshold = raw + RA_MAIN_COMPENSATION_MULT * RA_DROGUE_VEL * (static_cast<double>(RA_MAIN_TON) / 1000.0);
+
+  } else if (cmd.substring(0, 12) == "SET,TX_RATE,") {
+    const int hz = cmd.substring(12).toInt();
+    if (hz >= 1 && hz <= 10)
+      tx_interval_ms = 1000u / static_cast<uint32_t>(hz);
 
     /* ========== MEC ========== */
   } else if (cmd == "MEC,PL,ON") {

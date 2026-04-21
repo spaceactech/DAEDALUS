@@ -54,7 +54,7 @@ struct DataMemory {
   uint8_t yaw_accuracy = 0;  // 0=unreliable … 3=high (BNO08x mag calibration)
 
   bool deploy;
-  char cmd_echo[16] = "ECHO";
+  char cmd_echo[16] = "CXON";
 
   // Freshness flags — set true by each Read*() when new data arrives,
   // cleared by ConstructString() after consuming, mirroring test_i2c pattern.
