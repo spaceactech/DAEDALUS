@@ -598,21 +598,19 @@ void CB_AutoZeroAlt(void *) {
 }
 
 void CB_ConstructData(void *) {
+  uint8_t cpu_div = 0;
   hal::rtos::interval_loop(RA_INTERVAL_CONSTRUCT, [&]() -> void {
 #ifdef RA_STACK_HWM_ENABLED
     stack_hwm.construct = uxTaskGetStackHighWaterMark(NULL);
 #endif
-    // Read ADC-based CPU temp here, outside ConstructString, so the blocking
-    // analogRead() calls are not interleaved with the SPI DMA transfers running
-    // in CB_ReadIMU / CB_ReadAltimeter.
-    data.cpu_temp = ReadCPUTemp();
-    ConstructString();  // internally swaps into sd_buf/tx_buf under mtx_buf
+    if (++cpu_div >= 10) { cpu_div = 0; data.cpu_temp = ReadCPUTemp(); }
+    ConstructString();
   });
 }
 
 void CB_SDLogger(void *) {
   xcore::NbDelay write_delay(100ul, millis);
-  xcore::NbDelay flush_delay(5000ul, millis);
+  xcore::NbDelay flush_delay(1000ul, millis);
 
   hal::rtos::interval_loop(1ul, [&]() -> void {
 #ifdef RA_STACK_HWM_ENABLED
@@ -724,7 +722,7 @@ void CB_DebugLogger(void *) {
         { "INS",       stack_hwm.ins, 1024}, // 4096 B — commented out
         { "NEO",       stack_hwm.neo,  256}, // 1024 B
         {"CTRL",   stack_hwm.control, 1024}, // 4096 B — commented out
-        {  "SD",     stack_hwm.sdlog, 512}, // 4096 B
+        {  "SD",     stack_hwm.sdlog, 512}, // 2048 B
         { "DBG",     stack_hwm.debug,  512}, // 2048 B
       };
       uint32_t total_used = 0, total_alloc = 0;
@@ -1443,6 +1441,7 @@ void ConstructString() {
   csv_stream_lf(local_sd)
     << "DDL"
     << packet_count
+    << data.utc
     << data.timestamp_epoch
     << millis()
     << state_string(fsm.state())
@@ -1495,6 +1494,7 @@ void ConstructString() {
     << apogee_raw
 
     << pos_a  // Servo A
+    << pos_b
     << data.cpu_temp
     // FRESH bitmask: bit0=IMU bit1=ALT bit2=BNO bit3=GPS bit4=INA bit5=TOF
     << (uint8_t) ((snap_imu << 0) | (snap_alt << 1) | (snap_bno << 2) | (snap_gps << 3) | (snap_ina << 4) | (snap_tof << 5));
@@ -1534,7 +1534,7 @@ void ConstructString() {
 
     << data.cmd_echo  // CMD_ECHO
 
-    << data.yaw
+    << data.yaw - SPOOL_PHYSICAL_OFFSET
     << data.tof
     << data.deploy
     // FRESH bitmask: bit0=IMU bit1=ALT bit2=BNO bit3=GPS bit4=INA bit5=TOF

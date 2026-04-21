@@ -268,24 +268,22 @@ struct Guidance {
 
     double u1 = 0, u2 = 0, u3 = 0;
 
-    if (theta > 180.0)
-      theta = theta - 360.0;
+    theta = std::fmod(theta, 360.0);
+    if (theta < 0) theta += 360.0;
 
     if (theta >= 0 && theta < 120)
       u1 = X + INV_SQRT3 * Y;
-    else if (theta >= -120 && theta < 0)
+    else if (theta >= 240 && theta < 360)
       u1 = X - INV_SQRT3 * Y;
 
     if (theta >= 0 && theta < 120)
       u2 = TWO_INV_SQRT3 * Y;
-    else if ((theta >= 120 && theta <= 180) ||
-             (theta > -180 && theta < -120))
+    else if (theta >= 120 && theta < 240)
       u2 = -X + INV_SQRT3 * Y;
 
-    if (theta >= -120 && theta < 0)
+    if (theta >= 240 && theta < 360)
       u3 = -TWO_INV_SQRT3 * Y;
-    else if ((theta >= 120 && theta <= 180) ||
-             (theta > -180 && theta < -120))
+    else if (theta >= 120 && theta < 240)
       u3 = -X - INV_SQRT3 * Y;
 
     numeric_vector<3> out{};

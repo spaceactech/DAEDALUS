@@ -121,15 +121,17 @@ public:
   void setNorthLock(float raw_yaw_deg) {
     // We want: raw_yaw + mount_offset = 0  (magnetic north)
     // So mount_offset = -raw_yaw_deg, wrapped to (-180, +180].
-    mount_offset = fmod(-raw_yaw_deg + 360.0f, 360.0f);
+    // Then add SPOOL_PHYSICAL_OFFSET to align control frame with spool 1.
+    mount_offset = fmod(-raw_yaw_deg + SPOOL_PHYSICAL_OFFSET + 360.0f, 360.0f);
     if (mount_offset > 180.0f) mount_offset -= 360.0f;
 
     _save();
     state = BNO086CalState::IDLE;
 
     Serial.println("[MAGCAL] ── North lock set ───────────────────────────────");
-    Serial.printf ("[MAGCAL]   Raw yaw at lock : %.2f°\n", raw_yaw_deg);
-    Serial.printf ("[MAGCAL]   New mount_offset: %.2f°\n", mount_offset);
+    Serial.printf ("[MAGCAL]   Raw yaw at lock   : %.2f°\n", raw_yaw_deg);
+    Serial.printf ("[MAGCAL]   Spool phys. offset: %.2f°\n", (float)SPOOL_PHYSICAL_OFFSET);
+    Serial.printf ("[MAGCAL]   New mount_offset  : %.2f°\n", mount_offset);
     Serial.printf ("[MAGCAL]   Saved to BKPSRAM.\n");
     Serial.printf ("[MAGCAL]   To make permanent, update UserConfig.h:\n");
     Serial.printf ("             constexpr double BNO_MOUNT_OFFSET = %.2f;\n",
@@ -164,12 +166,12 @@ public:
       if (bno.getSensorEvent()) {
         if (bno.getSensorEventID() == SENSOR_REPORTID_ROTATION_VECTOR) {
           const float raw_yaw = 90.0f - bno.getYaw() * 180.0f / PI;
-          mount_offset = fmod(-raw_yaw + 360.0f, 360.0f);
+          mount_offset = fmod(-raw_yaw + SPOOL_PHYSICAL_OFFSET + 360.0f, 360.0f);
           if (mount_offset > 180.0f) mount_offset -= 360.0f;
           _save();
           state = BNO086CalState::IDLE;
-          Serial.printf("[MAGCAL] North locked: raw_yaw=%.2f°  mount_offset=%.2f°  (acc=%u/3)\n",
-                        raw_yaw, mount_offset, bno.getQuatAccuracy());
+          Serial.printf("[MAGCAL] North locked: raw_yaw=%.2f°  spool_offset=%.2f°  mount_offset=%.2f°  (acc=%u/3)\n",
+                        raw_yaw, (float)SPOOL_PHYSICAL_OFFSET, mount_offset, bno.getQuatAccuracy());
           return;
         }
       }

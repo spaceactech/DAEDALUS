@@ -25,8 +25,12 @@ constexpr bool RA_LED_ENABLED = true;
 // USB Debug
 constexpr bool RA_USB_DEBUG_ENABLED = true;
 
-constexpr double MAGNETIC_DECLINATION = 0.0;
-constexpr double BNO_MOUNT_OFFSET     = 45.0;;  // PCB mounting correction (degrees)
+constexpr double MAGNETIC_DECLINATION  = 0.0;
+constexpr double BNO_MOUNT_OFFSET      = 0.0;   // PCB mounting correction (degrees)
+
+// Spool 1 physical offset from magnetometer reference (degrees)
+constexpr double SPOOL_PHYSICAL_OFFSET = 0.0;  // For test
+// constexpr double SPOOL_PHYSICAL_OFFSET = 45.0;  // For CanSat
 
 // Stack High Water Mark (define to enable per-thread RAM reporting via serial)
 #define RA_STACK_HWM_ENABLED
@@ -191,9 +195,9 @@ constexpr uint32_t RA_AUTOZERO_SAMPLES = RA_AUTOZERO_TON / RA_INTERVAL_AUTOZERO;
 
 /* SD CARD LOGGER INTERVALS */
 
-constexpr uint32_t RA_SDLOGGER_INTERVAL_IDLE     = 1000ul;  // 1 Hz
-constexpr uint32_t RA_SDLOGGER_INTERVAL_SLOW     = 200ul;   // 5 Hz
-constexpr uint32_t RA_SDLOGGER_INTERVAL_FAST     = 100ul;   // 10 Hz
+constexpr uint32_t RA_SDLOGGER_INTERVAL_IDLE = 1000ul;  // 1 Hz
+constexpr uint32_t RA_SDLOGGER_INTERVAL_SLOW = 200ul;   // 5 Hz
+constexpr uint32_t RA_SDLOGGER_INTERVAL_FAST = 100ul;   // 10 Hz
 
 constexpr uint32_t DEPLOY_SHOULD_ACTIVATE = 40 * 60 * 1000ul;
 
