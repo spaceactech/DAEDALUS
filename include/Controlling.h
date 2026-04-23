@@ -342,7 +342,7 @@ struct Guidance {
     prev_dv     = ema_filter(dv, prev_dv, av);
     prev_dtheta = ema_filter(dtheta, prev_dtheta, at);
 
-    auto target_vec = compute_target_vector(distance, bearing);
+    auto target_vec = compute_target_vector(distance, prev_dtheta);
     auto control    = compute_control_vector(target_vec, bearing);
 
     return control_to_servo_angle(control);

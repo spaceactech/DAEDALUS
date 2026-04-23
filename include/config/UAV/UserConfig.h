@@ -116,6 +116,10 @@ constexpr double RA_BURNOUT_ACC = 0.60 * RA_LAUNCH_ACC;  // 9.81 m/s^2 (g)
 constexpr uint32_t RA_BURNOUT_TON     = 500ul;  // ms
 constexpr uint32_t RA_BURNOUT_SAMPLES = RA_BURNOUT_TON / RA_INTERVAL_FSM_EVAL;
 
+// Enable time-based state-transition guards (state_millis_elapsed) in EvalFSM.
+// When false, ASCENT uses velocity detection only; PROBE_REALEASE uses altitude only.
+constexpr bool RA_FSM_TIME_GUARD_ENABLED = false;
+
 // Apogee altitude (nominal for safeguard calculation)
 constexpr double RA_APOGEE_ALT = 50.0;  // m
 
@@ -131,7 +135,12 @@ constexpr double RA_DROGUE_VEL = 14.0;  // m/s
 
 // Main Deployment Event Altitude: altitude threshold (LT)
 constexpr double RA_MAIN_ALT_RAW = 40.0;  // m Apogee * 0.8
-constexpr double RA_INS_ALT_RAW = 2.0;  // m
+constexpr double RA_INS_ALT_RAW  = 2.0;   // m
+
+// INS deployment baro thresholds (runtime-adjustable via SET,INS_TOF / SET,INS_NEAR / SET,INS_CRIT)
+inline double RA_INS_TOF_THRESHOLD  = RA_INS_ALT_RAW;  // m — TOF trigger
+inline double RA_INS_NEAR_THRESHOLD = 15.0;             // m — baro near-ground trigger
+inline double RA_INS_CRIT_THRESHOLD = 3.0;              // m — baro critical trigger
 
 // Safeguard nominal time to main deployment
 constexpr uint32_t RA_TIME_TO_MAIN_NOM =  10 * 1000; // static_cast<uint32_t>((RA_APOGEE_ALT - RA_MAIN_ALT_RAW) / RA_DROGUE_VEL) * 1000ul;  // ms // maybe too fast

@@ -29,8 +29,8 @@ constexpr double MAGNETIC_DECLINATION  = 0.0;
 constexpr double BNO_MOUNT_OFFSET      = 0.0;   // PCB mounting correction (degrees)
 
 // Spool 1 physical offset from magnetometer reference (degrees)
-constexpr double SPOOL_PHYSICAL_OFFSET = 0.0;  // For test
-// constexpr double SPOOL_PHYSICAL_OFFSET = 45.0;  // For CanSat
+// constexpr double SPOOL_PHYSICAL_OFFSET = 0.0;  // For test
+constexpr double SPOOL_PHYSICAL_OFFSET = 45.0;  // For CanSat
 
 // Stack High Water Mark (define to enable per-thread RAM reporting via serial)
 #define RA_STACK_HWM_ENABLED
@@ -117,11 +117,15 @@ constexpr double RA_TRUE_TO_FALSE_RATIO = 1.0;  // (#True / #False), 0.5 = 33.3%
 
 /* LAUNCH CONFIGURATION */
 
+// Enable time-based state-transition guards (state_millis_elapsed) in EvalFSM.
+// When false, ASCENT uses velocity detection only; PROBE_REALEASE uses altitude only.
+constexpr bool RA_FSM_TIME_GUARD_ENABLED = true;
+
 // Safeguard minimum time to apogee - drogue deployment
 constexpr uint32_t RA_TIME_TO_APOGEE_MIN = 2 * 1000ul;  // ms
 
 // Safeguard maximum time to apogee - drogue deployment
-constexpr uint32_t RA_TIME_TO_APOGEE_MAX = 20 * 1000ul;  // ms
+constexpr uint32_t RA_TIME_TO_APOGEE_MAX = 10 * 1000ul;  // ms
 
 // Launch acceleration: acc. threshold (GT)
 constexpr double RA_LAUNCH_ACC = 9.81 * 30.0;  // 9.81 m/s^2 (g)
@@ -135,7 +139,7 @@ constexpr uint32_t RA_LAUNCH_SAMPLES = RA_LAUNCH_TON / RA_INTERVAL_FSM_EVAL;
 constexpr double RA_APOGEE_ALT = 668.0;  // m
 
 // Velocity at Apogee: vel. threshold (LT)
-constexpr double RA_APOGEE_VEL = 10.0;  // m/s
+constexpr double RA_APOGEE_VEL = 12.5;  // m/s
 
 // Velocity at Apogee detection period
 constexpr uint32_t RA_APOGEE_TON     = 500ul;  // ms
@@ -148,6 +152,11 @@ constexpr double RA_MAIN_VEL   = 5.0;   // m/s
 // Main Deployment Event Altitude: altitude threshold (LT)
 constexpr double RA_MAIN_ALT_RAW = RA_APOGEE_ALT * 0.8;  // m
 constexpr double RA_INS_ALT_RAW  = 2.0;                  // m
+
+// INS deployment baro thresholds (runtime-adjustable via SET,INS_TOF / SET,INS_NEAR / SET,INS_CRIT)
+inline double RA_INS_TOF_THRESHOLD  = RA_INS_ALT_RAW;  // m — TOF trigger
+inline double RA_INS_NEAR_THRESHOLD = 15.0;             // m — baro near-ground trigger
+inline double RA_INS_CRIT_THRESHOLD = 3.0;              // m — baro critical trigger
 
 // Safeguard overspeed threshold to main deployment
 constexpr double RA_MAIN_OVERSPEED_VEL = RA_DROGUE_VEL * 1.5;

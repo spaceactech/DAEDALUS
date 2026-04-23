@@ -91,7 +91,7 @@ public:
   }
 
   double pressure_hpa() override {
-    return data.pressure * 0.01;  // Pa -> kPa
+    return data.pressure * 0.01;  // Pa -> hPa
   }
 
   double temperature() override {

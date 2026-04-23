@@ -21,7 +21,7 @@
 #include <Servo.h>
 
 /* BEGIN INCLUDE USER'S IMPLEMENTATIONS */
-#include "config/Main/UserConfig.h"
+#include "UserConfig.h"
 #include "UserPins.h"     // User's Pins Mapping
 #include "UserSensors.h"  // User's Hardware Implementations
 #include "UserFSM.h"      // User's FSM States
@@ -76,7 +76,7 @@ double   alt_agl;  // Altitude above ground
 double   apogee_raw;
 uint32_t packet_count{};
 double   main_alt_threshold = RA_MAIN_ALT_COMPENSATED;  // Runtime-adjustable via SET,MAIN_ALT command
-uint32_t tx_interval_ms    = 200;                       // Runtime-adjustable via SET,TX_RATE command
+uint32_t tx_interval_ms     = 1000;                     // Runtime-adjustable via SET,TX_RATE command
 /* END PERSISTENT STATE */
 
 /* BEGIN DATA MEMORY */
@@ -160,6 +160,7 @@ hal::rtos::mutex_t mtx_cdc;
 hal::rtos::mutex_t mtx_uart;
 hal::rtos::mutex_t mtx_buf;  // guards tx_buf and sd_buf
 hal::rtos::mutex_t mtx_nav;  // guards nav_state — held for microseconds only
+hal::rtos::mutex_t mtx_kf;   // guards filter_acc, filter_alt, alt_agl, apogee_raw
 
 /* BEGIN USER PRIVATE FUNCTIONS */
 uint32_t LoggerInterval() {
@@ -222,7 +223,11 @@ struct StackHWM {
 void UserSetupGPIO() {
   if constexpr (RA_LED_ENABLED) {
     pinMode(USER_GPIO_BUZZER, OUTPUT);
+    digitalToggle(USER_GPIO_BUZZER);
+    delay(100);
+    digitalToggle(USER_GPIO_BUZZER);
   }
+
   led.begin();
   led.setBrightness(10);
   led.clear();
@@ -230,9 +235,6 @@ void UserSetupGPIO() {
   led.setPixelColor(1, led.Color(0, 0, 255));
   led.show();
   led.clear();
-  digitalToggle(USER_GPIO_BUZZER);
-  delay(100);
-  digitalToggle(USER_GPIO_BUZZER);
 
   // Sensors reset GPIO
   pinMode(BNO08X_RESET, OUTPUT);  // idle HIGH — bno.begin() owns the reset sequence
@@ -271,8 +273,11 @@ void UserSetupActuator() {
 
   //DEPLOYMENT SERVO
   servo_a.attach(USER_GPIO_SERVO_A, RA_SERVO_MIN, RA_SERVO_MAX, RA_SERVO_MAX);
-  servo_b.attach(USER_GPIO_SERVO_B, RA_SERVO_MIN, RA_SERVO_MAX, RA_SERVO_MAX);
+  servo_a.write(pos_a + 10);
   servo_a.write(pos_a);
+
+  servo_b.attach(USER_GPIO_SERVO_B, RA_SERVO_MIN, RA_SERVO_MAX, RA_SERVO_MAX);
+  servo_b.write(pos_b + 10);
   servo_b.write(pos_b);
 }
 
@@ -298,8 +303,6 @@ void UserSetupUSART() {
 void UserSetupI2C() {
   i2c4.setClock(100000);
   i2c4.begin();
-  // Abort + reset the peripheral if any transaction hangs beyond 50 ms.
-  // Without this, a stuck slave holds mtx_i2c forever and freezes all I2C tasks.
   i2c4.setTimeout(50);
 }
 
@@ -424,7 +427,7 @@ void CB_ReadIMU(void *) {
     acc = acc - G;
 
     // Update KF with measurement
-    filter_acc.kf.update({acc});
+    mtx_kf.exec([&]() { filter_acc.kf.update({acc}); });
   });
 }
 
@@ -436,12 +439,13 @@ void CB_ReadAltimeter(void *) {
     mtx_spi.exec(ReadAltimeter);
 
     // Update KF with measurement (real or simulated — altitude_m is already set correctly)
-    filter_alt.kf.update({data.altimeter[0].altitude_m});
-    if (!simActivated && !simEnabled)
-      alt_agl = data.altimeter[0].altitude_m - alt_ref;
-
-    if (alt_agl > apogee_raw)
-      apogee_raw = alt_agl;
+    mtx_kf.exec([&]() {
+      filter_alt.kf.update({data.altimeter[0].altitude_m});
+      if (!simActivated && !simEnabled)
+        alt_agl = data.altimeter[0].altitude_m - alt_ref;
+      if (alt_agl > apogee_raw)
+        apogee_raw = alt_agl;
+    });
   });
 }
 
@@ -583,9 +587,11 @@ void CB_EvalFSM(void *) {
     stack_hwm.fsm = uxTaskGetStackHighWaterMark(NULL);
 #endif
 
-    // Predict states to "now"
-    filter_acc.kf.predict();
-    filter_alt.kf.predict();
+    // Predict states to "now" — locked so sensor update() tasks cannot race predict()
+    mtx_kf.exec([&]() {
+      filter_acc.kf.predict();
+      filter_alt.kf.predict();
+    });
 
     // FSM with predicted states
     EvalFSM();
@@ -604,7 +610,10 @@ void CB_ConstructData(void *) {
 #ifdef RA_STACK_HWM_ENABLED
     stack_hwm.construct = uxTaskGetStackHighWaterMark(NULL);
 #endif
-    if (++cpu_div >= 10) { cpu_div = 0; data.cpu_temp = ReadCPUTemp(); }
+    if (++cpu_div >= 10) {
+      cpu_div       = 0;
+      data.cpu_temp = ReadCPUTemp();
+    }
     ConstructString();
   });
 }
@@ -634,7 +643,7 @@ void CB_SDLogger(void *) {
 }
 
 void CB_Transmit(void *) {
-  hal::rtos::interval_loop(tx_interval_ms,[&]() -> TickType_t { return tx_interval_ms; }, [&]() -> void {
+  hal::rtos::interval_loop(tx_interval_ms, [&]() -> TickType_t { return tx_interval_ms; }, [&]() -> void {
 #ifdef RA_STACK_HWM_ENABLED
       stack_hwm.transmit = uxTaskGetStackHighWaterMark(NULL);
 #endif
@@ -643,8 +652,7 @@ void CB_Transmit(void *) {
         mtx_buf.exec([&]() { snap = tx_buf; });
         mtx_uart.exec([&]() { Xbee.println(snap); });
         packet_count++;
-      }
-    });
+      } });
 }
 
 void CB_Control(void *) {
@@ -723,7 +731,7 @@ void CB_DebugLogger(void *) {
         { "INS",       stack_hwm.ins, 1024}, // 4096 B — commented out
         { "NEO",       stack_hwm.neo,  256}, // 1024 B
         {"CTRL",   stack_hwm.control, 1024}, // 4096 B — commented out
-        {  "SD",     stack_hwm.sdlog, 512}, // 2048 B
+        {  "SD",     stack_hwm.sdlog,  512}, // 2048 B
         { "DBG",     stack_hwm.debug,  512}, // 2048 B
       };
       uint32_t total_used = 0, total_alloc = 0;
@@ -768,13 +776,13 @@ void EvalINSDeploy() {
   if (!initialized) {
     initialized = true;
     sampler_tof.set_capacity(RA_INS_SAMPLES, /*recount*/ false);
-    sampler_tof.set_threshold(RA_INS_ALT_RAW, /*recount*/ false);
+    sampler_tof.set_threshold(RA_INS_TOF_THRESHOLD, /*recount*/ false);
 
     sampler_baro_near.set_capacity(RA_INS_SAMPLES, /*recount*/ false);
-    sampler_baro_near.set_threshold(15.0, /*recount*/ false);
+    sampler_baro_near.set_threshold(RA_INS_NEAR_THRESHOLD, /*recount*/ false);
 
     sampler_baro_critical.set_capacity(RA_INS_SAMPLES, /*recount*/ false);
-    sampler_baro_critical.set_threshold(3.0, /*recount*/ false);
+    sampler_baro_critical.set_threshold(RA_INS_CRIT_THRESHOLD, /*recount*/ false);
   }
 
   const auto state = fsm.state();
@@ -919,6 +927,8 @@ void setup() {
   // Restore last flight state from EEPROM (only if data was previously defined)
   if constexpr (RA_EEPROM_READ_ENABLED) {
     EEPROM_Read();
+    servo_a.write(pos_a);  // re-sync servo hardware to restored position
+    servo_b.write(pos_b);
     Serial.println("[EEPROM] Restore attempted");
   } else {
     // Zero altitude reference
@@ -930,8 +940,8 @@ void setup() {
   bno_cal.init(static_cast<float>(BNO_MOUNT_OFFSET));
   bno_cal.autoNorthLock(bno);
 
+  led.setPixelColor(0, led.Color(0, 0, 255));
   led.setPixelColor(1, led.Color(0, 0, 255));
-  led.setPixelColor(2, led.Color(0, 0, 255));
   led.show();
 
   UserSetupSD();
@@ -1013,11 +1023,14 @@ void EvalFSM() {
 
       const double vel = filter_alt.kf.state_vector()[1];
       sampler.add_sample(std::abs(vel));
-      state_millis_elapsed = millis() - state_millis_start;
 
-      if (state_millis_elapsed >= RA_TIME_TO_APOGEE_MIN &&
-          sampler.is_sampled() &&
-          sampler.under_by_over<double>() > RA_TRUE_TO_FALSE_RATIO)
+      if constexpr (RA_FSM_TIME_GUARD_ENABLED)
+        state_millis_elapsed = millis() - state_millis_start;
+
+      if ((RA_FSM_TIME_GUARD_ENABLED && state_millis_elapsed >= RA_TIME_TO_APOGEE_MAX) ||
+          ((!RA_FSM_TIME_GUARD_ENABLED || state_millis_elapsed >= RA_TIME_TO_APOGEE_MIN) &&
+           sampler.is_sampled() &&
+           sampler.under_by_over<double>() > RA_TRUE_TO_FALSE_RATIO))
         fsm.transfer(UserState::APOGEE);
       break;
     }
@@ -1049,10 +1062,12 @@ void EvalFSM() {
       }
 
       sampler.add_sample(alt_agl);
-      state_millis_elapsed = millis() - state_millis_start;
 
-      const bool cond_timeout   = state_millis_elapsed >= RA_TIME_TO_MAIN_MAX;
-      const bool cond_min_time  = state_millis_elapsed >= RA_TIME_TO_MAIN_MIN;
+      if constexpr (RA_FSM_TIME_GUARD_ENABLED)
+        state_millis_elapsed = millis() - state_millis_start;
+
+      const bool cond_timeout   = RA_FSM_TIME_GUARD_ENABLED && state_millis_elapsed >= RA_TIME_TO_MAIN_MAX;
+      const bool cond_min_time  = !RA_FSM_TIME_GUARD_ENABLED || state_millis_elapsed >= RA_TIME_TO_MAIN_MIN;
       const bool cond_alt_lower = sampler.is_sampled() &&
                                   sampler.under_by_over<double>() > RA_TRUE_TO_FALSE_RATIO;
 
@@ -1078,6 +1093,7 @@ void EvalFSM() {
 
       if (sampler.is_sampled() &&
           sampler.under_by_over<double>() > RA_TRUE_TO_FALSE_RATIO) {
+        ActivateDeployment(1);
         fsm.transfer(UserState::LANDED);
       }
 
@@ -1381,6 +1397,18 @@ void HandleCommand(const String &rx) {
     if (hz >= 1 && hz <= 10)
       tx_interval_ms = 1000u / static_cast<uint32_t>(hz);
 
+  } else if (cmd.substring(0, 12) == "SET,INS_TOF,") {
+    const double val = cmd.substring(12).toDouble();
+    if (val > 0) RA_INS_TOF_THRESHOLD = val;
+
+  } else if (cmd.substring(0, 13) == "SET,INS_NEAR,") {
+    const double val = cmd.substring(13).toDouble();
+    if (val > 0) RA_INS_NEAR_THRESHOLD = val;
+
+  } else if (cmd.substring(0, 13) == "SET,INS_CRIT,") {
+    const double val = cmd.substring(13).toDouble();
+    if (val > 0) RA_INS_CRIT_THRESHOLD = val;
+
     /* ========== MEC ========== */
   } else if (cmd == "MEC,PL,ON") {
     pos_a = RA_SERVO_A_RELEASE;
@@ -1420,7 +1448,6 @@ void HandleCommand(const String &rx) {
     /* ========== UNKNOWN ========== */
   } else {
     ++last_nack;
-    --last_ack;
     return;
   }
 

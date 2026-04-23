@@ -7,7 +7,10 @@ constexpr uint32_t USER_GPIO_LED    = PC14;
 constexpr uint32_t USER_GPIO_BUZZER = PC15;
 
 constexpr uint32_t USER_GPIO_SERVO_A = PA3;
-constexpr uint32_t USER_GPIO_SERVO_B = PB9;
+constexpr uint32_t USER_GPIO_SERVO_B = PA2;
+
+constexpr uint32_t USER_GPIO_CAM1 = PA1;
+constexpr uint32_t USER_GPIO_CAM2 = PB9;
 
 constexpr uint32_t USER_GPIO_SPI1_SCK  = PA5;
 constexpr uint32_t USER_GPIO_SPI1_MISO = PA6;
@@ -15,8 +18,6 @@ constexpr uint32_t USER_GPIO_SPI1_MOSI = PA7;
 
 constexpr uint32_t USER_GPIO_I2C4_SDA = PB7_ALT1;
 constexpr uint32_t USER_GPIO_I2C4_SCL = PB8_ALT1;
-
-constexpr uint32_t USER_GPIO_GPS_NRST = PH1;
 
 constexpr uint32_t USER_GPIO_SDIO_CMD  = PD2;
 constexpr uint32_t USER_GPIO_SDIO_CK   = PC12;
@@ -42,8 +43,6 @@ constexpr uint32_t USER_GPIO_XBEE_RX   = PB5;
 constexpr uint32_t USER_GPIO_XBEE_TX   = PB_6_ALT1;
 constexpr uint32_t USER_GPIO_XBEE_NRST = PB1;
 
-constexpr uint32_t USER_GPIO_PWM2 = PB9;
-constexpr uint32_t USER_GPIO_PWM3 = PA3;
 constexpr uint32_t USER_GPIO_Half = PB4;
 
 #endif  //ROCKET_AVIONICS_TEMPLATE_USERPINS_H
