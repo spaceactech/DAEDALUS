@@ -10,7 +10,7 @@ void setup() {
   delay(2000);
   Serial.println("[TEST_SERVOA] boot");
 
-  servo_a.attach(USER_GPIO_SERVO_A, RA_SERVO_MIN, RA_SERVO_MAX);
+  servo_a.attach(USER_GPIO_SERVO_B, RA_SERVO_MIN, RA_SERVO_MAX);
   servo_a.write(90);
   Serial.println("Servo A ready at 90 deg. Send angle (0-180):");
 }

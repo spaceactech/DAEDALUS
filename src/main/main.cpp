@@ -236,6 +236,12 @@ void UserSetupGPIO() {
   led.show();
   led.clear();
 
+  // Camera trigger pins — idle LOW, driven HIGH during ascent
+  pinMode(USER_GPIO_CAM1, OUTPUT);
+  pinMode(USER_GPIO_CAM2, OUTPUT);
+  digitalWrite(USER_GPIO_CAM1, LOW);
+  digitalWrite(USER_GPIO_CAM2, LOW);
+
   // Sensors reset GPIO
   pinMode(BNO08X_RESET, OUTPUT);  // idle HIGH — bno.begin() owns the reset sequence
 
@@ -1015,6 +1021,8 @@ void EvalFSM() {
     case UserState::ASCENT: {
       // !!!! Next: DETECT apogee !!!!
       if (fsm.on_enter()) {  // Run once
+        digitalWrite(USER_GPIO_CAM1, HIGH);
+        digitalWrite(USER_GPIO_CAM2, HIGH);
         sampler.reset();
         sampler.set_capacity(RA_APOGEE_SAMPLES, /*recount*/ false);
         sampler.set_threshold(RA_APOGEE_VEL, /*recount*/ false);
@@ -1101,6 +1109,11 @@ void EvalFSM() {
     }
 
     case UserState::LANDED: {
+      if (fsm.on_enter()) {
+        hal::rtos::delay_ms(60ul * 1000ul);  // let cameras record for 1 minute after landing
+        digitalWrite(USER_GPIO_CAM1, LOW);
+        digitalWrite(USER_GPIO_CAM2, LOW);
+      }
       if constexpr (RA_LED_ENABLED) {
         digitalWrite(USER_GPIO_BUZZER, 1);
       }
@@ -1209,8 +1222,8 @@ void ReadMAG() {
 
     // raw_yaw: ENU convention from BNO086 (CCW-positive, 0 = east)
     // Convert to CW-from-north (compass bearing) with the dynamic mount offset.
-    const double raw_yaw = 90.0 - bno.getYaw() * 180.0 / PI;
-    data.yaw             = fmod(raw_yaw + bno_cal.mount_offset + MAGNETIC_DECLINATION + 360.0, 360.0);
+    const double raw_yaw = 90.0 - bno.getYaw() * 180.0 / PI + bno_cal.mount_offset + MAGNETIC_DECLINATION;
+    data.yaw             = std::fmod(std::fmod(raw_yaw, 360.0) + 360.0, 360.0);
 
     // Track accuracy for north-lock readout
     data.yaw_accuracy = bno.getQuatAccuracy();
@@ -1570,7 +1583,7 @@ void ConstructString() {
 
     << data.cmd_echo  // CMD_ECHO
 
-    << data.yaw - SPOOL_PHYSICAL_OFFSET
+    << std::fmod(std::fmod(data.yaw - SPOOL_PHYSICAL_OFFSET, 360.0) + 360.0, 360.0)
     << data.tof
     << data.deploy
     // FRESH bitmask: bit0=IMU bit1=ALT bit2=BNO bit3=GPS bit4=INA bit5=TOF

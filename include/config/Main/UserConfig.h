@@ -128,7 +128,7 @@ constexpr uint32_t RA_TIME_TO_APOGEE_MIN = 2 * 1000ul;  // ms
 constexpr uint32_t RA_TIME_TO_APOGEE_MAX = 10 * 1000ul;  // ms
 
 // Launch acceleration: acc. threshold (GT)
-constexpr double RA_LAUNCH_ACC = 9.81 * 30.0;  // 9.81 m/s^2 (g)
+constexpr double RA_LAUNCH_ACC = 15 * 9.81;  // 9.81 m/s^2 (g)
 constexpr double RA_LAUNCH_ALT = 50.0;         // m
 
 // Launch acceleration detection period
@@ -136,7 +136,7 @@ constexpr uint32_t RA_LAUNCH_TON     = 200ul;  // ms
 constexpr uint32_t RA_LAUNCH_SAMPLES = RA_LAUNCH_TON / RA_INTERVAL_FSM_EVAL;
 
 // Apogee altitude (nominal for safeguard calculation)
-constexpr double RA_APOGEE_ALT = 668.0;  // m
+constexpr double RA_APOGEE_ALT = 950.0;  // m
 
 // Velocity at Apogee: vel. threshold (LT)
 constexpr double RA_APOGEE_VEL = 12.5;  // m/s
@@ -146,8 +146,8 @@ constexpr uint32_t RA_APOGEE_TON     = 500ul;  // ms
 constexpr uint32_t RA_APOGEE_SAMPLES = RA_APOGEE_TON / RA_INTERVAL_FSM_EVAL;
 
 // Drogue Descent Theoretical Velocity
-constexpr double RA_DROGUE_VEL = 14.0;  // m/s
-constexpr double RA_MAIN_VEL   = 5.0;   // m/s
+constexpr double RA_DROGUE_VEL = 15.0;  // m/s
+constexpr double RA_MAIN_VEL   = 3.5;   // m/s
 
 // Main Deployment Event Altitude: altitude threshold (LT)
 constexpr double RA_MAIN_ALT_RAW = RA_APOGEE_ALT * 0.8;  // m
