@@ -367,14 +367,42 @@ void UserSetupSensor() {
     m10s.setNavigationFrequency(10, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
     m10s.setAutoPVT(true, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
     m10s.setDynamicModel(DYN_MODEL_AIRBORNE4g, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
+
+    // Poll up to 2 s for a confirmed PVT from the battery-backed RTC.
+    // getConfirmedDate/Time is stricter than getTimeValid: the module must have
+    // cross-checked the RTC against an incoming signal at least once.
+    Serial.print("  RTC time: ");
+    const uint32_t t_rtc = millis();
+    bool rtc_valid = false;
+    while (millis() - t_rtc < 2000) {
+      if (m10s.checkUblox() && m10s.getConfirmedDate() && m10s.getConfirmedTime()) {
+        data.hh = m10s.getHour();
+        data.mm = m10s.getMinute();
+        data.ss = m10s.getSecond();
+        snprintf(data.utc, sizeof(data.utc), "%02d:%02d:%02d",
+                 data.hh, data.mm, data.ss);
+        Serial.printf("%04d-%02d-%02d %02d:%02d:%02d\n",
+                      m10s.getYear(), m10s.getMonth(), m10s.getDay(),
+                      data.hh, data.mm, data.ss);
+        rtc_valid = true;
+        break;
+      }
+      delay(50);
+    }
+    if (!rtc_valid) Serial.println("N/A");
   }
 
   // ── VL53L1X ToF Distance (I2C 0x29) ──────────────────────
   Serial.println("\n[SENSOR] VL53L1X ToF Distance (I2C 0x29)");
   tof.setI2CAddress(0x29);
   pvalid.tof = (tof.begin() == 0);
-  if (pvalid.tof)
+  if (pvalid.tof) {
     tof.setDistanceModeLong();
+    tof.setROI(4, 4, 50);
+    tof.startTemperatureUpdate();
+    tof.setSigmaThreshold(30);
+    // tof.setDistanceThreshold(300, 65535, 1);  // WINDOW_ABOVE: data-ready only when distance > 500 mm (50 cm)
+  }
   Serial.print("  Init: ");
   Serial.println(pvalid.tof ? "OK" : "FAIL");
 }
@@ -424,7 +452,7 @@ void CB_ReadIMU(void *) {
 
     const double &ax = data.imu[0].acc_x;
     const double &ay = data.imu[0].acc_y;
-    const double &az = data.imu[0].acc_z * -1.0;
+    const double &az  = data.imu[0].acc_z;
 
     // Total acceleration
     acc = std::sqrt(std::abs(ax * ax) + std::abs(ay * ay) + std::abs(az * az));
@@ -682,7 +710,7 @@ void CB_ReceiveCommand(void *) {
 #endif
     bool cmd_ready = false;
 
-    // 1. Read bytes — hold mtx_uart only while touching the UART
+    // 1. Read bytes from Xbee — hold mtx_uart only while touching the UART
     mtx_uart.exec([&]() -> void {
       while (Xbee.available()) {
         char c = Xbee.read();
@@ -695,13 +723,34 @@ void CB_ReceiveCommand(void *) {
       }
     });
 
-    // 2. Process command — outside both mutexes; Serial prints inside mtx_cdc
+    // 2. Process Xbee command — outside both mutexes; Serial prints inside mtx_cdc
     if (cmd_ready) {
       mtx_cdc.exec([&]() -> void {
         Serial.println(rx_message);
       });
       HandleCommand(rx_message);
       rx_message = "";
+    }
+
+    // 3. Mirror uplink on USB-CDC when debug is active (separate buffer — never races rx_message)
+    if constexpr (RA_USB_DEBUG_ENABLED) {
+      static String cdc_message;
+      bool cdc_ready = false;
+      mtx_cdc.exec([&]() -> void {
+        while (Serial.available()) {
+          char c = Serial.read();
+          if (c == '\n') {
+            cdc_message.trim();
+            cdc_ready = true;
+          } else {
+            cdc_message += c;
+          }
+        }
+      });
+      if (cdc_ready) {
+        HandleCommand(cdc_message);
+        cdc_message = "";
+      }
     }
   });
 }
@@ -1133,7 +1182,7 @@ void ReadIMU() {
       continue;
     data.imu[i].acc_x = imu[i]->acc_x();
     data.imu[i].acc_y = imu[i]->acc_y();
-    data.imu[i].acc_z = imu[i]->acc_z();
+    data.imu[i].acc_z = imu[i]->acc_z()  * -1.0;
     data.imu[i].gyr_x = imu[i]->gyr_x();
     data.imu[i].gyr_y = imu[i]->gyr_y();
     data.imu[i].gyr_z = imu[i]->gyr_z();
@@ -1357,6 +1406,19 @@ void HandleCommand(const String &rx) {
     ReadAltimeter();
     alt_ref = data.altimeter[0].altitude_m;
 
+    /* ========== CAL,TOF,<mm> — VL53L1X offset calibration at given distance ========== */
+  } else if (cmd.substring(0, 8) == "CAL,TOF,") {
+    if (!pvalid.tof) {
+      ++last_nack;
+      return;
+    }
+    const int dist_mm = cmd.substring(8).toInt();
+    if (dist_mm <= 0) {
+      ++last_nack;
+      return;
+    }
+    mtx_i2c.exec([&]() { tof.calibrateOffset(static_cast<uint16_t>(dist_mm)); });
+
     /* ========== CAL,MAG — BNO086 magnetometer offset calibration ========== */
   } else if (cmd == "CAL,MAG,START") {
     // Begin 30-second hard-iron offset measurement.
@@ -1452,7 +1514,6 @@ void HandleCommand(const String &rx) {
   } else if (cmd.substring(0, 8) == "SERVO,B,") {
     pos_b = constrain(cmd.substring(8).toFloat(), 0.0f, 180.0f);
     servo_b.write(pos_b);
-
     /* ========== RESET ========== */
   } else if (cmd == "RESET") {
     delay(100);
@@ -1587,7 +1648,8 @@ void ConstructString() {
     << data.tof
     << data.deploy
     // FRESH bitmask: bit0=IMU bit1=ALT bit2=BNO bit3=GPS bit4=INA bit5=TOF
-    << (uint8_t) ((snap_imu << 0) | (snap_alt << 1) | (snap_bno << 2) | (snap_gps << 3) | (snap_ina << 4) | (snap_tof << 5));
+    << (uint8_t) ((snap_imu << 0) | (snap_alt << 1) | (snap_bno << 2) | (snap_gps << 3) | (snap_ina << 4) | (snap_tof << 5))
+    << RA_LAUNCH_ALT;
 
   // Atomic update — lock held only for buffer mutation, not string building.
   // sd_buf accumulates rows; CB_SDLogger drains it by copy-and-clear.

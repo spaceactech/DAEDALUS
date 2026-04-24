@@ -129,14 +129,14 @@ constexpr uint32_t RA_TIME_TO_APOGEE_MAX = 10 * 1000ul;  // ms
 
 // Launch acceleration: acc. threshold (GT)
 constexpr double RA_LAUNCH_ACC = 9.81 * 30.0;  // 9.81 m/s^2 (g)
-constexpr double RA_LAUNCH_ALT = 50.0;         // m
+constexpr double RA_LAUNCH_ALT = 5.0;         // m
 
 // Launch acceleration detection period
 constexpr uint32_t RA_LAUNCH_TON     = 200ul;  // ms
 constexpr uint32_t RA_LAUNCH_SAMPLES = RA_LAUNCH_TON / RA_INTERVAL_FSM_EVAL;
 
 // Apogee altitude (nominal for safeguard calculation)
-constexpr double RA_APOGEE_ALT = 668.0;  // m
+constexpr double RA_APOGEE_ALT = 50.0;  // m
 
 // Velocity at Apogee: vel. threshold (LT)
 constexpr double RA_APOGEE_VEL = 12.5;  // m/s
@@ -207,8 +207,6 @@ constexpr uint32_t RA_AUTOZERO_SAMPLES = RA_AUTOZERO_TON / RA_INTERVAL_AUTOZERO;
 constexpr uint32_t RA_SDLOGGER_INTERVAL_IDLE = 1000ul;  // 1 Hz
 constexpr uint32_t RA_SDLOGGER_INTERVAL_SLOW = 200ul;   // 5 Hz
 constexpr uint32_t RA_SDLOGGER_INTERVAL_FAST = 100ul;   // 10 Hz
-
-constexpr uint32_t DEPLOY_SHOULD_ACTIVATE = 40 * 60 * 1000ul;
 
 // Static assertions validate settings
 namespace details::assertions {

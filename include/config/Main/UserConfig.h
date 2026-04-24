@@ -175,8 +175,8 @@ constexpr uint32_t RA_MAIN_TON     = 500ul;  // ms
 constexpr uint32_t RA_MAIN_SAMPLES = RA_MAIN_TON / RA_INTERVAL_FSM_EVAL;
 
 // Main Deployment Event Altitude detection period
-constexpr uint32_t RA_INS_TON     = 500ul;  // ms
-constexpr uint32_t RA_INS_SAMPLES = RA_MAIN_TON / RA_INTERVAL_FSM_EVAL;
+constexpr uint32_t RA_INS_TON     = 250ul;  // ms
+constexpr uint32_t RA_INS_SAMPLES = RA_INS_TON / RA_INTERVAL_FSM_EVAL;
 
 // Main Deployment Event Triggering Delay Compensation Multiplier
 constexpr double RA_MAIN_COMPENSATION_MULT = 2.0;
