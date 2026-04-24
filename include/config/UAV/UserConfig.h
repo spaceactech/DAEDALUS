@@ -78,7 +78,7 @@ constexpr uint32_t RA_INTERVAL_TOF_READING = 100ul;  // ms
 constexpr uint32_t RA_INTERVAL_INA_READING = 200ul;  // ms
 
 // FSM Evaluation
-constexpr uint32_t RA_INTERVAL_FSM_EVAL = 5ul;  // ms
+constexpr uint32_t RA_INTERVAL_FSM_EVAL = 10ul;  // ms
 
 // FSM Evaluation interval maximum jitter tolerance
 constexpr uint32_t RA_JITTER_TOLERANCE_FSM_EVAL = 1ul;  // ms
@@ -161,7 +161,7 @@ constexpr double RA_INS_ALT_RAW  = 2.0;                  // m
 // INS deployment baro thresholds (runtime-adjustable via SET,INS_TOF / SET,INS_NEAR / SET,INS_CRIT)
 inline double RA_INS_TOF_THRESHOLD  = RA_INS_ALT_RAW;  // m — TOF trigger
 inline double RA_INS_NEAR_THRESHOLD = 15.0;             // m — baro near-ground trigger
-inline double RA_INS_CRIT_THRESHOLD = 3.0;              // m — baro critical trigger
+inline double RA_INS_CRIT_THRESHOLD = 2.0;              // m — baro critical trigger
 
 // Safeguard overspeed threshold to main deployment
 constexpr double RA_MAIN_OVERSPEED_VEL = RA_DROGUE_VEL * 1.5;
@@ -171,8 +171,8 @@ constexpr uint32_t RA_MAIN_TON     = 500ul;  // ms
 constexpr uint32_t RA_MAIN_SAMPLES = RA_MAIN_TON / RA_INTERVAL_FSM_EVAL;
 
 // Main Deployment Event Altitude detection period
-constexpr uint32_t RA_INS_TON     = 500ul;  // ms
-constexpr uint32_t RA_INS_SAMPLES = RA_MAIN_TON / RA_INTERVAL_FSM_EVAL;
+constexpr uint32_t RA_INS_TON     = 50ul;  // ms
+constexpr uint32_t RA_INS_SAMPLES = RA_INS_TON / RA_INTERVAL_FSM_EVAL;
 
 // Main Deployment Event Triggering Delay Compensation Multiplier
 constexpr double RA_MAIN_COMPENSATION_MULT = 2.0;

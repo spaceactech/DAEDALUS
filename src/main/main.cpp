@@ -853,9 +853,17 @@ void EvalINSDeploy() {
   if (state != UserState::PAYLOAD_REALEASE && state != UserState::LANDED) return;
   if (data.deploy) return;
 
+  static double  baro_crit_log[50]{};
+  static uint8_t baro_crit_idx  = 0;
+  static bool    baro_crit_full = false;
+
   sampler_tof.add_sample(static_cast<double>(data.tof));
   sampler_baro_near.add_sample(alt_agl);
   sampler_baro_critical.add_sample(alt_agl);
+
+  baro_crit_log[baro_crit_idx] = alt_agl;
+  baro_crit_idx                = (baro_crit_idx + 1) % 50;
+  if (baro_crit_idx == 0) baro_crit_full = true;
 
   const bool tof_triggered = sampler_tof.is_sampled() &&
                              sampler_tof.under_by_over<double>() > RA_TRUE_TO_FALSE_RATIO;
@@ -870,8 +878,24 @@ void EvalINSDeploy() {
     data.deploy = 1;  // Condition 1: TOF + barometric near-ground
   if (baro_critical)
     data.deploy = 2;  // Condition 2: barometric critical-altitude backup
-  if ((tof_triggered && baro_near) || baro_critical)
+  if ((tof_triggered && baro_near) || baro_critical) {
     ActivateDeployment(1);
+
+    // Dump the last 50 alt_agl samples that drove the baro_critical decision
+    const uint8_t count = baro_crit_full ? 50 : baro_crit_idx;
+    const uint8_t start = baro_crit_full ? baro_crit_idx : 0;
+    mtx_cdc.exec([&]() {
+      Serial.print("[INS] baro_crit log (");
+      Serial.print(count);
+      Serial.println(" samples, oldest→newest):");
+      for (uint8_t i = 0; i < count; ++i) {
+        Serial.print("  ");
+        Serial.print(i);
+        Serial.print(": ");
+        Serial.println(baro_crit_log[(start + i) % 50], 2);
+      }
+    });
+  }
 }
 
 void CB_INSDeploy(void *) {

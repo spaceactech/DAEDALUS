@@ -854,10 +854,18 @@ void EvalINSDeploy() {
   if (state != UserState::PAYLOAD_REALEASE && state != UserState::LANDED) return;
   if (data.deploy) return;
 
-  if (pvalid.tof)
+  static double  baro_crit_log[50]{};
+  static uint8_t baro_crit_idx  = 0;
+  static bool    baro_crit_full = false;
+
+  if (pvalid.tof && data.tof > 0.5f)
     sampler_tof.add_sample(static_cast<double>(data.tof));
   sampler_baro_near.add_sample(alt_agl);
   sampler_baro_critical.add_sample(alt_agl);
+
+  baro_crit_log[baro_crit_idx] = alt_agl;
+  baro_crit_idx                = (baro_crit_idx + 1) % 50;
+  if (baro_crit_idx == 0) baro_crit_full = true;
 
   const bool tof_triggered = sampler_tof.is_sampled() &&
                              sampler_tof.under_by_over<double>() > RA_TRUE_TO_FALSE_RATIO;
@@ -872,12 +880,28 @@ void EvalINSDeploy() {
     data.deploy = 1;  // Condition 1: TOF + barometric near-ground
   if (baro_critical)
     data.deploy = 2;  // Condition 2: barometric critical-altitude backup
-  if ((tof_triggered && baro_near) || baro_critical)
+  if ((tof_triggered && baro_near) || baro_critical) {
     ActivateDeployment(1);
+
+    // Dump the last 50 alt_agl samples that drove the baro_critical decision
+    const uint8_t count = baro_crit_full ? 50 : baro_crit_idx;
+    const uint8_t start = baro_crit_full ? baro_crit_idx : 0;
+    mtx_cdc.exec([&]() {
+      Serial.print("[INS] baro_crit log (");
+      Serial.print(count);
+      Serial.println(" samples, oldest→newest):");
+      for (uint8_t i = 0; i < count; ++i) {
+        Serial.print("  ");
+        Serial.print(i);
+        Serial.print(": ");
+        Serial.println(baro_crit_log[(start + i) % 50], 2);
+      }
+    });
+  }
 }
 
 void CB_INSDeploy(void *) {
-  hal::rtos::interval_loop(RA_INTERVAL_TOF_READING, [&]() -> void {
+  hal::rtos::interval_loop(RA_INTERVAL_FSM_EVAL, [&]() -> void {
 #ifdef RA_STACK_HWM_ENABLED
     stack_hwm.ins = uxTaskGetStackHighWaterMark(NULL);
 #endif
@@ -1382,157 +1406,220 @@ void AutoZeroAlt() {
 }
 
 void HandleCommand(const String &rx) {
-  if (rx.substring(0, 9) != "CMD,1043,") {
+  xcore::command_parser_t<128, 8, ','> parser;
+  if (!parser.parse(rx.c_str())) {
     ++last_nack;
     return;
   }
 
-  String cmd = rx.substring(9);
-  cmd.trim();
+  // Validate "CMD,1043," prefix
+  const char *p0 = parser.argv[0];
+  const char *p1 = parser.argv[1];
+  if (!p0 ||
+      strcmp(p0, "CMD") != 0 ||
+      !p1 ||
+      strcmp(p1, "1043") != 0) {
+    ++last_nack;
+    return;
+  }
 
-  strncpy(data.cmd_echo, cmd.c_str(), sizeof(data.cmd_echo) - 1);
-  data.cmd_echo[sizeof(data.cmd_echo) - 1] = '\0';  // sizeof = 16, safe for all commands
+  const char *p2 = parser.argv[2];  // primary command
+  const char *p3 = parser.argv[3];  // sub-command or first arg
+  const char *p4 = parser.argv[4];  // value
+
+  if (!p2) {
+    ++last_nack;
+    return;
+  }
+
+  // Echo the command portion (rx is unmodified by the parser)
+  strncpy(data.cmd_echo, rx.c_str() + 9, sizeof(data.cmd_echo) - 1);
+  data.cmd_echo[sizeof(data.cmd_echo) - 1] = '\0';
 
   /* ========== CX ========== */
-  if (cmd == "CX,ON") {
-    telemetry_enabled = true;
-  } else if (cmd == "CX,OFF") {
-    telemetry_enabled = false;
-
-    /* ========== SIM ========== */
-  } else if (cmd == "SIM,ENABLE") {
-    simEnabled = true;
-  } else if (cmd == "SIM,ACTIVATE") {
-    if (!simEnabled) {
+  if (strcmp(p2, "CX") == 0) {
+    if (!p3) {
       ++last_nack;
       return;
     }
-    simActivated = true;
-    simPressure  = static_cast<uint32_t>(data.altimeter[0].pressure_hpa * 100.0f);
-    data.mode[0] = 'S';
-    data.mode[1] = '\0';
-  } else if (cmd == "SIM,DISABLE") {
-    simEnabled   = false;
-    simActivated = false;
-    data.mode[0] = 'F';
-    data.mode[1] = '\0';
+    if (strcmp(p3, "ON") == 0)
+      telemetry_enabled = true;
+    else if (strcmp(p3, "OFF") == 0)
+      telemetry_enabled = false;
+    else {
+      ++last_nack;
+      return;
+    }
+
+    /* ========== SIM ========== */
+  } else if (strcmp(p2, "SIM") == 0) {
+    if (!p3) {
+      ++last_nack;
+      return;
+    }
+    if (strcmp(p3, "ENABLE") == 0) {
+      simEnabled = true;
+    } else if (strcmp(p3, "ACTIVATE") == 0) {
+      if (!simEnabled) {
+        ++last_nack;
+        return;
+      }
+      simActivated = true;
+      data.mode[0] = 'S';
+      data.mode[1] = '\0';
+    } else if (strcmp(p3, "DISABLE") == 0) {
+      simEnabled   = false;
+      simActivated = false;
+      data.mode[0] = 'F';
+      data.mode[1] = '\0';
+    } else {
+      ++last_nack;
+      return;
+    }
 
     /* ========== SIMP ========== */
-  } else if (cmd.substring(0, 5) == "SIMP,") {
+  } else if (strcmp(p2, "SIMP") == 0) {
     if (!simEnabled || !simActivated) {
       ++last_nack;
       return;
     }
-    int val = cmd.substring(5).toInt();
+    if (!p3) {
+      ++last_nack;
+      return;
+    }
+    char      *end;
+    const long val = strtol(p3, &end, 10);
+    if (end == p3 || *end != '\0') { ++last_nack; return; }
     if (val >= 0) simPressure = static_cast<uint32_t>(val);
 
     /* ========== CAL ========== */
-  } else if (cmd == "CAL") {
-    ReadAltimeter();
-    alt_ref = data.altimeter[0].altitude_m;
-
-    /* ========== CAL,TOF,<mm> — VL53L1X offset calibration at given distance ========== */
-  } else if (cmd.substring(0, 8) == "CAL,TOF,") {
-    if (!pvalid.tof) {
-      ++last_nack;
-      return;
-    }
-    const int dist_mm = cmd.substring(8).toInt();
-    if (dist_mm <= 0) {
-      ++last_nack;
-      return;
-    }
-    mtx_i2c.exec([&]() { tof.calibrateOffset(static_cast<uint16_t>(dist_mm)); });
-
-    /* ========== CAL,MAG — BNO086 magnetometer offset calibration ========== */
-  } else if (cmd == "CAL,MAG,START") {
-    // Begin 30-second hard-iron offset measurement.
-    // Rotate sensor through all orientations while this runs.
-    if (!pvalid.bno) {
-      ++last_nack;
-      return;
-    }
-    mtx_i2c.exec([&]() { bno_cal.startMagCollection(bno); });
-
-  } else if (cmd == "CAL,NORTH") {
-    // Lock current heading as 0° (magnetic north).
-    // Send this command while the sensor is pointing steadily to magnetic north.
-    if (!pvalid.bno) {
-      ++last_nack;
-      return;
-    }
-    if (!bno_cal.isAwaitingNorth() && !bno_cal.isIdle()) {
-      ++last_nack;
-      return;
-    }
-    // Capture raw yaw (before any offset correction) from the latest sensor read.
-    // raw_yaw = 90 - bno.getYaw_deg, which is what ReadMAG uses before adding offsets.
-    float raw_yaw = 0.f;
-    mtx_i2c.exec([&]() {
-      // Trigger a fresh event so getYaw() reflects current orientation.
-      if (bno.getSensorEvent() &&
-          bno.getSensorEventID() == SENSOR_REPORTID_ROTATION_VECTOR) {
-        raw_yaw = 90.0f - bno.getYaw() * 180.0f / PI;
+  } else if (strcmp(p2, "CAL") == 0) {
+    if (!p3) {
+      ReadAltimeter();
+      alt_ref = data.altimeter[0].altitude_m;
+    } else if (strcmp(p3, "TOF") == 0) {
+      // VL53L1X offset calibration at given distance
+      if (!pvalid.tof) {
+        ++last_nack;
+        return;
       }
-    });
-    bno_cal.setNorthLock(raw_yaw);
-
-  } else if (cmd == "CAL,MAG,STATUS") {
-    if (!pvalid.bno) {
+      if (!p4) {
+        ++last_nack;
+        return;
+      }
+      char      *end;
+      const long dist_mm = strtol(p4, &end, 10);
+      if (end == p4 || *end != '\0' || dist_mm <= 0) {
+        ++last_nack;
+        return;
+      }
+      mtx_i2c.exec([&]() { tof.calibrateOffset(static_cast<uint16_t>(dist_mm)); });
+    } else if (strcmp(p3, "MAG") == 0) {
+      // BNO086 magnetometer calibration sub-commands
+      if (!p4) {
+        ++last_nack;
+        return;
+      }
+      if (strcmp(p4, "START") == 0) {
+        // Begin 30-second hard-iron offset measurement.
+        // Rotate sensor through all orientations while this runs.
+        if (!pvalid.bno) {
+          ++last_nack;
+          return;
+        }
+        mtx_i2c.exec([&]() { bno_cal.startMagCollection(bno); });
+      } else if (strcmp(p4, "STATUS") == 0) {
+        if (!pvalid.bno) {
+          ++last_nack;
+          return;
+        }
+        mtx_i2c.exec([&]() { bno_cal.printStatus(bno); });
+      } else if (strcmp(p4, "RESET") == 0) {
+        bno_cal.reset(static_cast<float>(BNO_MOUNT_OFFSET));
+      } else {
+        ++last_nack;
+        return;
+      }
+    } else if (strcmp(p3, "NORTH") == 0) {
+      // Lock current heading as 0° (magnetic north).
+      // Send this command while the sensor is pointing steadily to magnetic north.
+      if (!pvalid.bno) {
+        ++last_nack;
+        return;
+      }
+      if (!bno_cal.isAwaitingNorth() && !bno_cal.isIdle()) {
+        ++last_nack;
+        return;
+      }
+      // Capture raw yaw (before any offset correction) from the latest sensor read.
+      // raw_yaw = 90 - bno.getYaw_deg, which is what ReadMAG uses before adding offsets.
+      float raw_yaw = 0.f;
+      mtx_i2c.exec([&]() {
+        if (bno.getSensorEvent() &&
+            bno.getSensorEventID() == SENSOR_REPORTID_ROTATION_VECTOR) {
+          raw_yaw = 90.0f - bno.getYaw() * 180.0f / PI;
+        }
+      });
+      bno_cal.setNorthLock(raw_yaw);
+    } else {
       ++last_nack;
       return;
     }
-    mtx_i2c.exec([&]() { bno_cal.printStatus(bno); });
-
-  } else if (cmd == "CAL,MAG,RESET") {
-    bno_cal.reset(static_cast<float>(BNO_MOUNT_OFFSET));
 
     /* ========== SET ========== */
-  } else if (cmd.substring(0, 13) == "SET,MAIN_ALT,") {
-    const double raw = cmd.substring(13).toDouble();
-    if (raw <= 0) {
+  } else if (strcmp(p2, "SET") == 0) {
+    if (!p3 || !p4) {
       ++last_nack;
       return;
     }
-    main_alt_threshold = raw;
-
-  } else if (cmd.substring(0, 15) == "SET,APOGEE_ALT,") {
-    const double val = cmd.substring(15).toDouble();
-    if (val <= 0) {
-      ++last_nack;
-      return;
-    }
-    RA_APOGEE_ALT    = val;
-    apogee_alt_dirty = true;
-
-  } else if (cmd.substring(0, 12) == "SET,TX_RATE,") {
-    const int hz = cmd.substring(12).toInt();
-    if (hz >= 1 && hz <= 10)
-      tx_interval_ms = 1000u / static_cast<uint32_t>(hz);
-
-  } else if (cmd.substring(0, 12) == "SET,INS_TOF,") {
-    const double val = cmd.substring(12).toDouble();
-    if (val > 0) {
+    if (strcmp(p3, "MAIN_ALT") == 0) {
+      char        *end;
+      const double raw = strtod(p4, &end);
+      if (end == p4 || *end != '\0' || raw <= 0) {
+        ++last_nack;
+        return;
+      }
+      main_alt_threshold = raw;
+    } else if (strcmp(p3, "APOGEE_ALT") == 0) {
+      char        *end;
+      const double val = strtod(p4, &end);
+      if (end == p4 || *end != '\0' || val <= 0) {
+        ++last_nack;
+        return;
+      }
+      RA_APOGEE_ALT    = val;
+      apogee_alt_dirty = true;
+    } else if (strcmp(p3, "TX_RATE") == 0) {
+      char      *end;
+      const long hz = strtol(p4, &end, 10);
+      if (end == p4 || *end != '\0') { ++last_nack; return; }
+      if (hz >= 1 && hz <= 10)
+        tx_interval_ms = 1000u / static_cast<uint32_t>(hz);
+    } else if (strcmp(p3, "INS_TOF") == 0) {
+      char        *end;
+      const double val = strtod(p4, &end);
+      if (end == p4 || *end != '\0' || val <= 0) {
+        ++last_nack;
+        return;
+      }
       RA_INS_TOF_THRESHOLD = val;
       ins_thresholds_dirty = true;
-    } else {
-      ++last_nack;
-      return;
-    }
-
-  } else if (cmd.substring(0, 13) == "SET,INS_NEAR,") {
-    const double val = cmd.substring(13).toDouble();
-    if (val > 0) {
+    } else if (strcmp(p3, "INS_NEAR") == 0) {
+      char        *end;
+      const double val = strtod(p4, &end);
+      if (end == p4 || *end != '\0' || val <= 0) {
+        ++last_nack;
+        return;
+      }
       RA_INS_NEAR_THRESHOLD = val;
       ins_thresholds_dirty  = true;
-    } else {
-      ++last_nack;
-      return;
-    }
-
-  } else if (cmd.substring(0, 13) == "SET,INS_CRIT,") {
-    const double val = cmd.substring(13).toDouble();
-    if (val > 0) {
+    } else if (strcmp(p3, "INS_CRIT") == 0) {
+      char        *end;
+      const double val = strtod(p4, &end);
+      if (end == p4 || *end != '\0' || val <= 0) {
+        ++last_nack;
+        return;
+      }
       RA_INS_CRIT_THRESHOLD = val;
       ins_thresholds_dirty  = true;
     } else {
@@ -1541,37 +1628,73 @@ void HandleCommand(const String &rx) {
     }
 
     /* ========== MEC ========== */
-  } else if (cmd == "MEC,PL,ON") {
-    pos_a = RA_SERVO_A_RELEASE;
-    servo_a.write(pos_a);
-  } else if (cmd == "MEC,PL,OFF") {
-    pos_a = RA_SERVO_A_LOCK;
-    servo_a.write(pos_a);
-  } else if (cmd == "MEC,INS,ON") {
-    pos_b = RA_SERVO_B_RELEASE;
-    servo_b.write(pos_b);
-  } else if (cmd == "MEC,INS,OFF") {
-    pos_b = RA_SERVO_B_LOCK;
-    servo_b.write(pos_b);
-  } else if (cmd == "MEC,PAR,CW") {
-    for (size_t i = 0; i < 3; ++i)
-      controller.driver.write_speed(ServoDriver::IDS[i], 100);
-  } else if (cmd == "MEC,PAR,ACW") {
-    for (size_t i = 0; i < 3; ++i)
-      controller.driver.write_speed(ServoDriver::IDS[i], -100);
-  } else if (cmd == "MEC,PAR,OFF") {
-    for (size_t i = 0; i < 3; ++i)
-      controller.driver.write_speed(ServoDriver::IDS[i], 0);
+  } else if (strcmp(p2, "MEC") == 0) {
+    if (!p3 || !p4) {
+      ++last_nack;
+      return;
+    }
+    if (strcmp(p3, "PL") == 0) {
+      if (strcmp(p4, "ON") == 0) {
+        pos_a = RA_SERVO_A_RELEASE;
+        servo_a.write(pos_a);
+      } else if (strcmp(p4, "OFF") == 0) {
+        pos_a = RA_SERVO_A_LOCK;
+        servo_a.write(pos_a);
+      } else {
+        ++last_nack;
+        return;
+      }
+    } else if (strcmp(p3, "INS") == 0) {
+      if (strcmp(p4, "ON") == 0) {
+        pos_b = RA_SERVO_B_RELEASE;
+        servo_b.write(pos_b);
+      } else if (strcmp(p4, "OFF") == 0) {
+        pos_b = RA_SERVO_B_LOCK;
+        servo_b.write(pos_b);
+      } else {
+        ++last_nack;
+        return;
+      }
+    } else if (strcmp(p3, "PAR") == 0) {
+      if (strcmp(p4, "CW") == 0) {
+        for (size_t i = 0; i < 3; ++i) controller.driver.write_speed(ServoDriver::IDS[i], 100);
+      } else if (strcmp(p4, "ACW") == 0) {
+        for (size_t i = 0; i < 3; ++i) controller.driver.write_speed(ServoDriver::IDS[i], -100);
+      } else if (strcmp(p4, "OFF") == 0) {
+        for (size_t i = 0; i < 3; ++i) controller.driver.write_speed(ServoDriver::IDS[i], 0);
+      } else {
+        ++last_nack;
+        return;
+      }
+    } else {
+      ++last_nack;
+      return;
+    }
 
     /* ========== SERVO ========== */
-  } else if (cmd.substring(0, 8) == "SERVO,A,") {
-    pos_a = constrain(cmd.substring(8).toFloat(), 0.0f, 180.0f);
-    servo_a.write(pos_a);
-  } else if (cmd.substring(0, 8) == "SERVO,B,") {
-    pos_b = constrain(cmd.substring(8).toFloat(), 0.0f, 180.0f);
-    servo_b.write(pos_b);
+  } else if (strcmp(p2, "SERVO") == 0) {
+    if (!p3 || !p4) {
+      ++last_nack;
+      return;
+    }
+    char *end;
+    if (strcmp(p3, "A") == 0) {
+      const double a = strtod(p4, &end);
+      if (end == p4 || *end != '\0') { ++last_nack; return; }
+      pos_a = constrain(a, 0.0, 180.0);
+      servo_a.write(pos_a);
+    } else if (strcmp(p3, "B") == 0) {
+      const double b = strtod(p4, &end);
+      if (end == p4 || *end != '\0') { ++last_nack; return; }
+      pos_b = constrain(b, 0.0, 180.0);
+      servo_b.write(pos_b);
+    } else {
+      ++last_nack;
+      return;
+    }
+
     /* ========== RESET ========== */
-  } else if (cmd == "RESET") {
+  } else if (strcmp(p2, "RESET") == 0) {
     delay(100);
     __NVIC_SystemReset();
 
@@ -1704,8 +1827,9 @@ void ConstructString() {
     << data.tof
     << data.deploy
     << RA_APOGEE_ALT
+    << main_alt_threshold
     << RA_LAUNCH_ALT
-    << main_alt_threshold;
+    << RA_INS_CRIT_THRESHOLD;
   // FRESH bitmask: bit0=IMU bit1=ALT bit2=BNO bit3=GPS bit4=INA bit5=TOF
   // << (uint8_t) ((snap_imu << 0) | (snap_alt << 1) | (snap_bno << 2) | (snap_gps << 3) | (snap_ina << 4) | (snap_tof << 5));
 

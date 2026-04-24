@@ -129,7 +129,7 @@
                 "STM32H7",
                 "STM32H7xx",
                 "STM32H725xx",
-                "ARDUINO_GENERIC_H725RGVX",
+                "ARDUINO_GENERIC_H72add5RGVX",
                 "USE_PWR_DIRECT_SMPS_SUPPLY",
                 "TIM_IRQ_PRIO=3",
                 "PIO_FRAMEWORK_ARDUINO_NANOLIB_FLOAT_PRINTF",
