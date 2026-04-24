@@ -21,7 +21,7 @@
 #include <Servo.h>
 
 /* BEGIN INCLUDE USER'S IMPLEMENTATIONS */
-#include "UserConfig.h"
+#include "config/UAV/UserConfig.h"
 #include "UserPins.h"     // User's Pins Mapping
 #include "UserSensors.h"  // User's Hardware Implementations
 #include "UserFSM.h"      // User's FSM States
@@ -97,9 +97,10 @@ float pos_b = RA_SERVO_B_LOCK;
 /* END ACTUATORS */
 
 volatile bool ins_thresholds_dirty = false;
+volatile bool apogee_alt_dirty     = false;
 
 /* EEPROM — backed by STM32H725 Backup SRAM (0x38800000)
-   Direct memcpy: no Flash erase, no blocking, ~microseconds.          */
+   Direct memcpy: no Flash erase, no blocking, ~microseconds.*/
 
 void EEPROM_Write() {
   EEPROMStore s{};
@@ -853,7 +854,8 @@ void EvalINSDeploy() {
   if (state != UserState::PAYLOAD_REALEASE && state != UserState::LANDED) return;
   if (data.deploy) return;
 
-  sampler_tof.add_sample(static_cast<double>(data.tof));
+  if (pvalid.tof)
+    sampler_tof.add_sample(static_cast<double>(data.tof));
   sampler_baro_near.add_sample(alt_agl);
   sampler_baro_critical.add_sample(alt_agl);
 
@@ -936,7 +938,8 @@ void UserThreads() {
     hal::rtos::scheduler.create(CB_SDLogger, {.name = "CB_SDLogger", .stack_size = 2048, .priority = osPriorityNormal});
   }
 
-  hal::rtos::scheduler.create(CB_EEPROMWrite, {.name = "CB_EEPROMWrite", .stack_size = 2048, .priority = osPriorityLow});
+  // if (RA_EEPROM_READ_ENABLED)
+  // hal::rtos::scheduler.create(CB_EEPROMWrite, {.name = "CB_EEPROMWrite", .stack_size = 2048, .priority = osPriorityLow});
 
   hal::rtos::scheduler.create(CB_Transmit, {.name = "CB_Transmit", .stack_size = 2048, .priority = osPriorityNormal});
   hal::rtos::scheduler.create(CB_ReceiveCommand, {.name = "CB_ReceiveCommand", .stack_size = 2048, .priority = osPriorityNormal});
@@ -1085,22 +1088,26 @@ void EvalFSM() {
         digitalWrite(USER_GPIO_CAM2, HIGH);
         sampler.reset();
         sampler.set_capacity(RA_APOGEE_SAMPLES, /*recount*/ false);
-        sampler.set_threshold(RA_APOGEE_VEL, /*recount*/ false);
+        sampler.set_threshold(RA_APOGEE_ALT, /*recount*/ false);
         state_millis_start = millis();
       }
 
-      const double vel = filter_alt.kf.state_vector()[1];
-      sampler.add_sample(std::abs(vel));
+      if (apogee_alt_dirty) {
+        apogee_alt_dirty = false;
+        sampler.set_threshold(RA_APOGEE_ALT, /*recount*/ false);
+      }
+
+      sampler.add_sample(alt_agl);
 
       if constexpr (RA_FSM_TIME_GUARD_ENABLED) {
         state_millis_elapsed = millis() - state_millis_start;
         if ((state_millis_elapsed >= RA_TIME_TO_APOGEE_MAX) ||
             (state_millis_elapsed >= RA_TIME_TO_APOGEE_MIN &&
              sampler.is_sampled() &&
-             sampler.under_by_over<double>() > RA_TRUE_TO_FALSE_RATIO))
+             sampler.over_by_under<double>() > RA_TRUE_TO_FALSE_RATIO))
           fsm.transfer(UserState::APOGEE);
       } else {
-        if (sampler.is_sampled() && sampler.under_by_over<double>() > RA_TRUE_TO_FALSE_RATIO)
+        if (sampler.is_sampled() && sampler.over_by_under<double>() > RA_TRUE_TO_FALSE_RATIO)
           fsm.transfer(UserState::APOGEE);
       }
       break;
@@ -1112,7 +1119,6 @@ void EvalFSM() {
       filter_acc.kf.predict();
       filter_alt.kf.predict();
       hal::rtos::delay_ms(1500);
-      main_alt_threshold = apogee_raw * 0.8;
       fsm.transfer(UserState::DESCENT);
       break;
     }
@@ -1170,8 +1176,8 @@ void EvalFSM() {
 
       if (sampler.is_sampled() &&
           sampler.under_by_over<double>() > RA_TRUE_TO_FALSE_RATIO) {
-        ActivateDeployment(1);
-        fsm.transfer(UserState::LANDED);
+        // ActivateDeployment(1);
+        // fsm.transfer(UserState::LANDED);
       }
 
       break;
@@ -1211,18 +1217,16 @@ void ReadIMU() {
 }
 
 void ReadAltimeter() {
-  const double qnh_hpa = 1013.25;
-
   for (size_t i = 0; i < RA_NUM_ALTIMETER; ++i) {
     if (sensors_health.altimeter[i] != SensorStatus::SENSOR_OK ||
         !altimeter[i]->read())
       continue;
 
     if (simActivated && simEnabled) {
-      double sim_alt_msl             = altitude_msl_from_pressure(simPressure / 100.F, qnh_hpa);
+      double sim_alt_msl             = altitude_msl_from_pressure(simPressure / 100.F);
       data.altimeter[i].altitude_m   = sim_alt_msl;
       data.altimeter[i].pressure_hpa = simPressure / 100.F;
-      alt_agl                        = sim_alt_msl - alt_ref;
+      alt_agl                        = sim_alt_msl;
     } else {
       data.altimeter[i].pressure_hpa = altimeter[i]->pressure_hpa();
       data.altimeter[i].altitude_m   = altimeter[i]->altitude_m();
@@ -1484,9 +1488,22 @@ void HandleCommand(const String &rx) {
     bno_cal.reset(static_cast<float>(BNO_MOUNT_OFFSET));
 
     /* ========== SET ========== */
-  } else if (cmd.substring(0, 12) == "SET,MAIN_ALT") {
-    double raw         = cmd.substring(13).toDouble();
-    main_alt_threshold = raw + RA_MAIN_COMPENSATION_MULT * RA_DROGUE_VEL * (static_cast<double>(RA_MAIN_TON) / 1000.0);
+  } else if (cmd.substring(0, 13) == "SET,MAIN_ALT,") {
+    const double raw = cmd.substring(13).toDouble();
+    if (raw <= 0) {
+      ++last_nack;
+      return;
+    }
+    main_alt_threshold = raw;
+
+  } else if (cmd.substring(0, 15) == "SET,APOGEE_ALT,") {
+    const double val = cmd.substring(15).toDouble();
+    if (val <= 0) {
+      ++last_nack;
+      return;
+    }
+    RA_APOGEE_ALT    = val;
+    apogee_alt_dirty = true;
 
   } else if (cmd.substring(0, 12) == "SET,TX_RATE,") {
     const int hz = cmd.substring(12).toInt();
@@ -1495,15 +1512,33 @@ void HandleCommand(const String &rx) {
 
   } else if (cmd.substring(0, 12) == "SET,INS_TOF,") {
     const double val = cmd.substring(12).toDouble();
-    if (val > 0) RA_INS_TOF_THRESHOLD = val;
+    if (val > 0) {
+      RA_INS_TOF_THRESHOLD = val;
+      ins_thresholds_dirty = true;
+    } else {
+      ++last_nack;
+      return;
+    }
 
   } else if (cmd.substring(0, 13) == "SET,INS_NEAR,") {
     const double val = cmd.substring(13).toDouble();
-    if (val > 0) RA_INS_NEAR_THRESHOLD = val;
+    if (val > 0) {
+      RA_INS_NEAR_THRESHOLD = val;
+      ins_thresholds_dirty  = true;
+    } else {
+      ++last_nack;
+      return;
+    }
 
   } else if (cmd.substring(0, 13) == "SET,INS_CRIT,") {
     const double val = cmd.substring(13).toDouble();
-    if (val > 0) RA_INS_CRIT_THRESHOLD = val;
+    if (val > 0) {
+      RA_INS_CRIT_THRESHOLD = val;
+      ins_thresholds_dirty  = true;
+    } else {
+      ++last_nack;
+      return;
+    }
 
     /* ========== MEC ========== */
   } else if (cmd == "MEC,PL,ON") {
@@ -1668,9 +1703,11 @@ void ConstructString() {
     << std::fmod(std::fmod(data.yaw - SPOOL_PHYSICAL_OFFSET, 360.0) + 360.0, 360.0)
     << data.tof
     << data.deploy
-    // FRESH bitmask: bit0=IMU bit1=ALT bit2=BNO bit3=GPS bit4=INA bit5=TOF
-    << (uint8_t) ((snap_imu << 0) | (snap_alt << 1) | (snap_bno << 2) | (snap_gps << 3) | (snap_ina << 4) | (snap_tof << 5))
-    << RA_LAUNCH_ALT;
+    << RA_APOGEE_ALT
+    << RA_LAUNCH_ALT
+    << main_alt_threshold;
+  // FRESH bitmask: bit0=IMU bit1=ALT bit2=BNO bit3=GPS bit4=INA bit5=TOF
+  // << (uint8_t) ((snap_imu << 0) | (snap_alt << 1) | (snap_bno << 2) | (snap_gps << 3) | (snap_ina << 4) | (snap_tof << 5));
 
   // Atomic update — lock held only for buffer mutation, not string building.
   // sd_buf accumulates rows; CB_SDLogger drains it by copy-and-clear.

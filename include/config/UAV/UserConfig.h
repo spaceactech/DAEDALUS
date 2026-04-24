@@ -127,6 +127,12 @@ constexpr uint32_t RA_TIME_TO_APOGEE_MIN = 2 * 1000ul;  // ms
 // Safeguard maximum time to apogee - drogue deployment
 constexpr uint32_t RA_TIME_TO_APOGEE_MAX = 10 * 1000ul;  // ms
 
+// Safeguard minimum time to apogee - drogue deployment
+constexpr uint32_t RA_TIME_TO_MAIN_MIN = 2 * 1000ul;  // ms
+
+// Safeguard maximum time to apogee - drogue deployment
+constexpr uint32_t RA_TIME_TO_MAIN_MAX = 10 * 1000ul;  // ms
+
 // Launch acceleration: acc. threshold (GT)
 constexpr double RA_LAUNCH_ACC = 9.81 * 30.0;  // 9.81 m/s^2 (g)
 constexpr double RA_LAUNCH_ALT = 5.0;         // m
@@ -135,8 +141,8 @@ constexpr double RA_LAUNCH_ALT = 5.0;         // m
 constexpr uint32_t RA_LAUNCH_TON     = 200ul;  // ms
 constexpr uint32_t RA_LAUNCH_SAMPLES = RA_LAUNCH_TON / RA_INTERVAL_FSM_EVAL;
 
-// Apogee altitude (nominal for safeguard calculation)
-constexpr double RA_APOGEE_ALT = 50.0;  // m
+// Apogee altitude (nominal for safeguard calculation, runtime-adjustable via SET,APOGEE_ALT)
+inline double RA_APOGEE_ALT = 50.0;  // m
 
 // Velocity at Apogee: vel. threshold (LT)
 constexpr double RA_APOGEE_VEL = 12.5;  // m/s
@@ -150,7 +156,6 @@ constexpr double RA_DROGUE_VEL = 14.0;  // m/s
 constexpr double RA_MAIN_VEL   = 5.0;   // m/s
 
 // Main Deployment Event Altitude: altitude threshold (LT)
-constexpr double RA_MAIN_ALT_RAW = RA_APOGEE_ALT * 0.8;  // m
 constexpr double RA_INS_ALT_RAW  = 2.0;                  // m
 
 // INS deployment baro thresholds (runtime-adjustable via SET,INS_TOF / SET,INS_NEAR / SET,INS_CRIT)
@@ -160,15 +165,6 @@ inline double RA_INS_CRIT_THRESHOLD = 3.0;              // m — baro critical t
 
 // Safeguard overspeed threshold to main deployment
 constexpr double RA_MAIN_OVERSPEED_VEL = RA_DROGUE_VEL * 1.5;
-
-// Safeguard nominal time to main deployment
-constexpr uint32_t RA_TIME_TO_MAIN_NOM = static_cast<uint32_t>((RA_APOGEE_ALT - RA_MAIN_ALT_RAW) / RA_DROGUE_VEL) * 1000ul;  // ms
-
-// Safeguard minimum time to main deployment
-constexpr uint32_t RA_TIME_TO_MAIN_MIN = RA_TIME_TO_MAIN_NOM * (1.00 - 0.15);  // ms
-
-// Safeguard maximum time to main deployment
-constexpr uint32_t RA_TIME_TO_MAIN_MAX = RA_TIME_TO_MAIN_NOM * (1.00 + 0.05);  // ms
 
 // Main Deployment Event Altitude detection period
 constexpr uint32_t RA_MAIN_TON     = 500ul;  // ms
@@ -182,11 +178,11 @@ constexpr uint32_t RA_INS_SAMPLES = RA_MAIN_TON / RA_INTERVAL_FSM_EVAL;
 constexpr double RA_MAIN_COMPENSATION_MULT = 2.0;
 constexpr double RA_INS_COMPENSATION_MULT  = 2.0;
 
-// Main Deployment Event Triggering Delay Compensation Value
-constexpr double RA_MAIN_ALT_COMPENSATED = RA_MAIN_ALT_RAW + RA_MAIN_COMPENSATION_MULT * RA_DROGUE_VEL * (static_cast<double>(RA_MAIN_TON) / 1000.);  // m
-
 // INS Deployment Event Triggering Delay Compensation Value
 constexpr double RA_INS_ALT_COMPENSATED = RA_INS_ALT_RAW + RA_INS_COMPENSATION_MULT * RA_MAIN_VEL * (static_cast<double>(RA_MAIN_TON) / 1000.);  // m
+
+// Main deployment altitude default (APOGEE state auto-overrides with apogee_raw * 0.8)
+constexpr double RA_MAIN_ALT_COMPENSATED = 40.0;  // m — fallback only
 
 // Velocity at Landed State: vel. threshold (LT)
 constexpr double RA_LANDED_VEL = 0.1;  // m/s
