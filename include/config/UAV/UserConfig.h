@@ -63,7 +63,7 @@ constexpr uint32_t UBLOX_CUSTOM_MAX_WAIT = 250ul;
 constexpr uint32_t RA_INTERVAL_IMU_READING = 5ul;  // ms
 
 // Altimeter Reading
-constexpr uint32_t RA_INTERVAL_ALTIMETER_READING = 25ul;  // ms
+constexpr uint32_t RA_INTERVAL_ALTIMETER_READING = 50ul;  // ms
 
 // GNSS Reading
 constexpr uint32_t RA_INTERVAL_GNSS_READING = 100ul;  // ms

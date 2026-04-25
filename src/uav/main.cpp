@@ -151,8 +151,8 @@ FsUtil fs_sd;
 
 /* BEGIN FILTERS */
 xcore::vdt<FILTER_ORDER - 1> vdt(static_cast<double>(RA_INTERVAL_FSM_EVAL) * 0.001);
-Filter1T                     filter_acc;
-Filter1T                     filter_alt;
+FilterAcc                    filter_acc;
+FilterAlt                    filter_alt;
 /* END FILTERS */
 
 /* BEGIN USER PRIVATE VARIABLES */
@@ -1692,6 +1692,21 @@ void HandleCommand(const String &rx) {
       ++last_nack;
       return;
     }
+
+    /* ========== TARGET ========== */
+  } else if (strcmp(p2, "TARGET") == 0) {
+    if (!p3 || !p4) {
+      ++last_nack;
+      return;
+    }
+    char        *end_lat, *end_lon;
+    const double lat = strtod(p3, &end_lat);
+    const double lon = strtod(p4, &end_lon);
+    if (end_lat == p3 || *end_lat != '\0' || end_lon == p4 || *end_lon != '\0') {
+      ++last_nack;
+      return;
+    }
+    target_location = {lat, lon};
 
     /* ========== RESET ========== */
   } else if (strcmp(p2, "RESET") == 0) {
