@@ -122,4 +122,50 @@ struct Filter2T {
   // xcore::kalman_filter_t<FILTER_ORDER, 2, 1> kf{F, B, H, Q, R, x0, P0};
 };
 
+// =============================================================================
+// GPS Navigation Kalman filter
+// States  : [pos_deg, vel_m_s, accel_m_s2]
+//   North : pos = latitude_deg,  vel = vn_m_s
+//   East  : pos = longitude_deg, vel = ve_m_s
+// Meas    : [pos_deg, vel_m_s]  — u-blox M10S PVT, 10 Hz
+//
+// Physical coupling in F: d(pos_deg)/dt = vel_m_s / R  where R is m/deg.
+//   North: R = GPS_R_LAT = 111320 m/deg  (constant)
+//   East : R = GPS_R_LAT * cos(lat_rad)  (updated at runtime each GPS fix)
+// The caller scales the standard vdt F by dividing F[0][1] and F[0][2] by R.
+//
+// Q/R chosen so the mixed-unit states are balanced:
+//   R_pos ≈ (2 m / 111320 m·deg⁻¹)² ≈ 3e-10 deg²   (σ_pos ≈ 2 m horizontal)
+//   R_vel ≈ (0.1 m/s)² = 0.01  (M10S velocity σ)
+// =============================================================================
+constexpr double KF_GPS_R_POS = 0.00000001172200918;  // deg²  (σ_pos ≈ 2 m)
+constexpr double KF_GPS_R_VEL = 0.000005359009697;   // (m/s)²
+constexpr double KF_GPS_Q_POS = 1.0e-12;  // position process noise
+constexpr double KF_GPS_Q_VEL = 1.0e-4;   // velocity process noise
+constexpr double KF_GPS_Q_ACC = 1.0e-2;   // acceleration process noise
+constexpr double GPS_R_LAT    = 111320.0; // metres per degree of latitude
+
+struct FilterGPS {
+  static constexpr xcore::numeric_matrix<FILTER_ORDER, 1> B = xcore::make_numeric_matrix<FILTER_ORDER, 1>();
+  static constexpr xcore::numeric_matrix<2, FILTER_ORDER> H = xcore::make_numeric_matrix<2, FILTER_ORDER>({
+    {1, 0, 0},
+    {0, 1, 0}
+  });
+  static constexpr xcore::numeric_vector<FILTER_ORDER> x0 = xcore::make_numeric_vector<FILTER_ORDER>();
+  static constexpr xcore::numeric_matrix<FILTER_ORDER> P0 = xcore::numeric_matrix<FILTER_ORDER>::diagonals(1000.);
+
+  xcore::numeric_matrix<FILTER_ORDER> F = xcore::make_numeric_matrix<FILTER_ORDER>();
+  xcore::numeric_matrix<FILTER_ORDER> Q = xcore::make_numeric_matrix<FILTER_ORDER>({
+    {KF_GPS_Q_POS, 0.0,          0.0         },
+    {0.0,          KF_GPS_Q_VEL, 0.0         },
+    {0.0,          0.0,          KF_GPS_Q_ACC}
+  });
+  xcore::numeric_matrix<2> R = xcore::make_numeric_matrix<2>({
+    {KF_GPS_R_POS, 0.0         },
+    {0.0,          KF_GPS_R_VEL}
+  });
+
+  xcore::kalman_filter_t<FILTER_ORDER, 2, 1> kf{F, B, H, Q, R, x0, P0};
+};
+
 #endif  //MINI_FC_FIRMWARE_KALMAN_H

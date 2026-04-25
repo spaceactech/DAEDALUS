@@ -46,11 +46,11 @@ constexpr bool RA_RETAIN_DEPLOYMENT_ENABLED = true;
 // When true, EEPROM_Read() in setup() restores the last saved state if the
 // magic number and CRC are valid (i.e. data was previously defined / written).
 // Set false to always start with a clean slate.
-constexpr bool RA_EEPROM_READ_ENABLED = false;
+constexpr bool RA_EEPROM_READ_ENABLED = true;
 
 // EEPROM write interval (ms)
 constexpr uint32_t RA_EEPROM_WRITE_INTERVAL = 10000ul;  // 10 s
-
+  
 // Auto-Zero Altitude
 constexpr bool RA_AUTO_ZERO_ALT_ENABLED = false;
 

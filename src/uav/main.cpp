@@ -107,12 +107,12 @@ void EEPROM_Write() {
   s.magic = EEPROM_MAGIC;
   memcpy(s.utc, data.utc, sizeof(s.utc));
   s.packet_count = packet_count;
-  s.state        = static_cast<uint8_t>(fsm.state());
-  s.alt_ref      = alt_ref;
-  s.pos_a        = pos_a;
-  s.pos_b        = pos_b;
+  // s.state        = static_cast<uint8_t>(fsm.state());
+  s.alt_ref = alt_ref;
+  s.pos_a   = pos_a;
+  s.pos_b   = pos_b;
   for (size_t i = 0; i < 3; ++i)
-    s.servo_target[i] = servo_target_angles[i];
+    s.servo_target[i] = controller.last_angles[i];
 
   s.crc = eeprom_crc8(
     reinterpret_cast<const uint8_t *>(&s) + EEPROM_PAYLOAD_OFFSET,
@@ -137,7 +137,7 @@ void EEPROM_Read() {
 
   memcpy(data.utc, s.utc, sizeof(data.utc));
   packet_count = s.packet_count;
-  fsm.transfer(static_cast<UserState>(s.state));
+  // fsm.transfer(static_cast<UserState>(s.state));
   alt_ref = s.alt_ref;
   pos_a   = s.pos_a;
   pos_b   = s.pos_b;
@@ -153,6 +153,8 @@ FsUtil fs_sd;
 xcore::vdt<FILTER_ORDER - 1> vdt(static_cast<double>(RA_INTERVAL_FSM_EVAL) * 0.001);
 FilterAcc                    filter_acc;
 FilterAlt                    filter_alt;
+FilterGPS                    filter_nav_n;  // state[0]=lat_deg (filtered),  state[1]=vn_m_s (filtered)
+FilterGPS                    filter_nav_e;  // state[0]=lon_deg (filtered),  state[1]=ve_m_s (filtered)
 /* END FILTERS */
 
 /* BEGIN USER PRIVATE VARIABLES */
@@ -531,10 +533,42 @@ void CB_ReadGNSS(void *) {
         hung_count = 0;
       }
     });
+
+    if (data.gps_fresh && gps_fixed) {
+      mtx_kf.exec([&]() {
+        // Update east F with current latitude so the coupling dt/(R_lat·cos(lat)) stays accurate
+        auto         F_e   = vdt.generate_F();
+        const double R_lon = GPS_R_LAT * std::cos(data.latitude * (PI / 180.0));
+        F_e[0][1] /= R_lon;
+        F_e[0][2] /= R_lon;
+        filter_nav_e.F = F_e;
+
+        // Feed position + velocity measurements into both GPS KFs
+        filter_nav_n.kf.update({data.latitude,  data.velocity_n});
+        filter_nav_e.kf.update({data.longitude, data.velocity_e});
+      });
+    }
+
+    // Snapshot filtered GPS state, write back to data, and publish to nav_state.
+    // Only overwrite when KF has been seeded — otherwise keep raw GPS values.
+    double kf_lat, kf_lon, kf_vn, kf_ve;
+    mtx_kf.exec([&]() {
+      kf_lat = filter_nav_n.kf.state_vector()[0];
+      kf_lon = filter_nav_e.kf.state_vector()[0];
+      kf_vn  = filter_nav_n.kf.state_vector()[1];
+      kf_ve  = filter_nav_e.kf.state_vector()[1];
+    });
+    if (gps_fixed) {
+      data.latitude    = kf_lat;
+      data.longitude   = kf_lon;
+      data.velocity_n  = kf_vn;
+      data.velocity_e  = kf_ve;
+      current_location = {kf_lat, kf_lon};
+    }
     mtx_nav.exec([&]() {
-      nav_state.location = current_location;
-      nav_state.vn       = data.velocity_n;
-      nav_state.ve       = data.velocity_e;
+      nav_state.location = {kf_lat, kf_lon};
+      nav_state.vn       = kf_vn;
+      nav_state.ve       = kf_ve;
       nav_state.fixed    = gps_fixed;
     });
   });
@@ -618,6 +652,13 @@ void CB_EvalFSM(void *) {
       // Regenerate F with the new dt
       filter_acc.F = vdt.generate_F();
       filter_alt.F = vdt.generate_F();
+      {
+        auto F = vdt.generate_F();
+        F[0][1] /= GPS_R_LAT;
+        F[0][2] /= GPS_R_LAT;
+        filter_nav_n.F = F;
+        // filter_nav_e.F is updated in CB_ReadGNSS with the current cos(lat) factor
+      }
     }
 
 #ifdef RA_STACK_HWM_ENABLED
@@ -628,6 +669,8 @@ void CB_EvalFSM(void *) {
     mtx_kf.exec([&]() {
       filter_acc.kf.predict();
       filter_alt.kf.predict();
+      filter_nav_n.kf.predict();
+      filter_nav_e.kf.predict();
     });
 
     // FSM with predicted states
@@ -703,7 +746,7 @@ void CB_Control(void *) {
 
     servo_target_angles = controller.guidance.update(snap.location, target_location, alt_agl, snap.vn, snap.ve, snap.yaw);
 
-    if (fsm.state() != UserState::PAYLOAD_REALEASE) return;
+    // if (fsm.state() != UserState::PAYLOAD_REALEASE) return;
 
     controller.servo_pid_update(servo_target_angles);
   });
@@ -965,8 +1008,8 @@ void UserThreads() {
     hal::rtos::scheduler.create(CB_SDLogger, {.name = "CB_SDLogger", .stack_size = 2048, .priority = osPriorityNormal});
   }
 
-  // if (RA_EEPROM_READ_ENABLED)
-  // hal::rtos::scheduler.create(CB_EEPROMWrite, {.name = "CB_EEPROMWrite", .stack_size = 2048, .priority = osPriorityLow});
+  if (RA_EEPROM_READ_ENABLED)
+    hal::rtos::scheduler.create(CB_EEPROMWrite, {.name = "CB_EEPROMWrite", .stack_size = 2048, .priority = osPriorityLow});
 
   hal::rtos::scheduler.create(CB_Transmit, {.name = "CB_Transmit", .stack_size = 2048, .priority = osPriorityNormal});
   hal::rtos::scheduler.create(CB_ReceiveCommand, {.name = "CB_ReceiveCommand", .stack_size = 2048, .priority = osPriorityNormal});
@@ -994,6 +1037,13 @@ void setup() {
   /* BEGIN FILTERS SETUP */
   filter_alt.F = vdt.generate_F();
   filter_acc.F = vdt.generate_F();
+  {
+    auto F = vdt.generate_F();
+    F[0][1] /= GPS_R_LAT;
+    F[0][2] /= GPS_R_LAT;
+    filter_nav_n.F = F;
+    filter_nav_e.F = F;  // east starts with equatorial approx; updated on first GPS fix
+  }
   /* END FILTERS SETUP */
 
   // IMU
@@ -1022,6 +1072,10 @@ void setup() {
 
   // Restore last flight state from EEPROM (only if data was previously defined)
   if constexpr (RA_EEPROM_READ_ENABLED) {
+    // Zero altitude reference
+    delay(4000);
+    ReadAltimeter();
+    alt_ref = data.altimeter[0].altitude_m;
     EEPROM_Read();
     servo_a.write(pos_a);  // re-sync servo hardware to restored position
     servo_b.write(pos_b);
@@ -1142,9 +1196,6 @@ void EvalFSM() {
 
     case UserState::APOGEE: {
       // <--- Next: always transfer --->
-      // reset Kalman
-      filter_acc.kf.predict();
-      filter_alt.kf.predict();
       hal::rtos::delay_ms(1500);
       fsm.transfer(UserState::DESCENT);
       break;
@@ -1859,7 +1910,10 @@ void ConstructString() {
     << RA_APOGEE_ALT
     << main_alt_threshold
     << RA_LAUNCH_ALT
-    << RA_INS_CRIT_THRESHOLD;
+    << RA_INS_CRIT_THRESHOLD
+    << controller.last_angles[0]   // SERVO_1_ANGLE (deg)
+    << controller.last_angles[1]   // SERVO_2_ANGLE (deg)
+    << controller.last_angles[2];  // SERVO_3_ANGLE (deg)
   // FRESH bitmask: bit0=IMU bit1=ALT bit2=BNO bit3=GPS bit4=INA bit5=TOF
   // << (uint8_t) ((snap_imu << 0) | (snap_alt << 1) | (snap_bno << 2) | (snap_gps << 3) | (snap_ina << 4) | (snap_tof << 5));
 
