@@ -702,6 +702,9 @@ void CB_Control(void *) {
     if (!snap.fixed) return;
 
     servo_target_angles = controller.guidance.update(snap.location, target_location, alt_agl, snap.vn, snap.ve, snap.yaw);
+
+    if (fsm.state() != UserState::PAYLOAD_REALEASE) return;
+
     controller.servo_pid_update(servo_target_angles);
   });
 }
@@ -1489,7 +1492,10 @@ void HandleCommand(const String &rx) {
     }
     char      *end;
     const long val = strtol(p3, &end, 10);
-    if (end == p3 || *end != '\0') { ++last_nack; return; }
+    if (end == p3 || *end != '\0') {
+      ++last_nack;
+      return;
+    }
     if (val >= 0) simPressure = static_cast<uint32_t>(val);
 
     /* ========== CAL ========== */
@@ -1592,7 +1598,10 @@ void HandleCommand(const String &rx) {
     } else if (strcmp(p3, "TX_RATE") == 0) {
       char      *end;
       const long hz = strtol(p4, &end, 10);
-      if (end == p4 || *end != '\0') { ++last_nack; return; }
+      if (end == p4 || *end != '\0') {
+        ++last_nack;
+        return;
+      }
       if (hz >= 1 && hz <= 10)
         tx_interval_ms = 1000u / static_cast<uint32_t>(hz);
     } else if (strcmp(p3, "INS_TOF") == 0) {
@@ -1680,12 +1689,18 @@ void HandleCommand(const String &rx) {
     char *end;
     if (strcmp(p3, "A") == 0) {
       const double a = strtod(p4, &end);
-      if (end == p4 || *end != '\0') { ++last_nack; return; }
+      if (end == p4 || *end != '\0') {
+        ++last_nack;
+        return;
+      }
       pos_a = constrain(a, 0.0, 180.0);
       servo_a.write(pos_a);
     } else if (strcmp(p3, "B") == 0) {
       const double b = strtod(p4, &end);
-      if (end == p4 || *end != '\0') { ++last_nack; return; }
+      if (end == p4 || *end != '\0') {
+        ++last_nack;
+        return;
+      }
       pos_b = constrain(b, 0.0, 180.0);
       servo_b.write(pos_b);
     } else {

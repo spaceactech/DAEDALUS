@@ -87,7 +87,7 @@ constexpr uint32_t RA_JITTER_TOLERANCE_FSM_EVAL = 1ul;  // ms
 constexpr uint32_t RA_INTERVAL_CONSTRUCT = 100ul;  // ms
 
 // Data Construct
-constexpr uint32_t RA_INTERVAL_Controlling = 100ul;  // ms 20Hz
+constexpr uint32_t RA_INTERVAL_Controlling = 50ul;  // ms 20Hz
 
 // Altitude Auto-Zero
 constexpr uint32_t RA_INTERVAL_AUTOZERO = 50ul;  // ms
