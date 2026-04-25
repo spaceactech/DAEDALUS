@@ -112,7 +112,7 @@ void EEPROM_Write() {
   s.pos_a   = pos_a;
   s.pos_b   = pos_b;
   for (size_t i = 0; i < 3; ++i)
-    s.servo_target[i] = controller.last_angles[i];
+    s.servo_angles[i] = controller.last_angles[i];
 
   s.crc = eeprom_crc8(
     reinterpret_cast<const uint8_t *>(&s) + EEPROM_PAYLOAD_OFFSET,
@@ -142,7 +142,7 @@ void EEPROM_Read() {
   pos_a   = s.pos_a;
   pos_b   = s.pos_b;
   for (size_t i = 0; i < 3; ++i)
-    servo_target_angles[i] = s.servo_target[i];
+    controller.last_angles[i] = s.servo_angles[i];
 }
 
 /* BEGIN SD CARD */
@@ -544,7 +544,7 @@ void CB_ReadGNSS(void *) {
         filter_nav_e.F = F_e;
 
         // Feed position + velocity measurements into both GPS KFs
-        filter_nav_n.kf.update({data.latitude,  data.velocity_n});
+        filter_nav_n.kf.update({data.latitude, data.velocity_n});
         filter_nav_e.kf.update({data.longitude, data.velocity_e});
       });
     }
@@ -746,7 +746,7 @@ void CB_Control(void *) {
 
     servo_target_angles = controller.guidance.update(snap.location, target_location, alt_agl, snap.vn, snap.ve, snap.yaw);
 
-    // if (fsm.state() != UserState::PAYLOAD_REALEASE) return;
+    if (fsm.state() != UserState::PAYLOAD_REALEASE) return;
 
     controller.servo_pid_update(servo_target_angles);
   });
@@ -956,21 +956,17 @@ void CB_INSDeploy(void *) {
 }
 
 void CB_NeoPixelBlink(void *) {
-  static xcore::FfTimer led_ff(950, 50, millis);
+  static uint16_t hue = 0;
 
-  hal::rtos::interval_loop(1ul, [&]() -> void {
+  hal::rtos::interval_loop(200ul, [&]() -> void {
 #ifdef RA_STACK_HWM_ENABLED
     stack_hwm.neo = uxTaskGetStackHighWaterMark(NULL);
 #endif
-    led_ff.on_rising([]() -> void {
-            led.setPixelColor(0, led.Color(255, 0, 0));
-            led.setPixelColor(1, led.Color(255, 0, 0));
-            led.show();
-          })
-      .on_falling([]() -> void {
-        led.clear();
-        led.show();
-      });
+    uint32_t color = led.gamma32(led.ColorHSV(hue));
+    led.setPixelColor(0, color);
+    led.setPixelColor(1, color);
+    led.show();
+    hue += 1820;  // full rainbow in ~36 steps (36 × 50 ms = 1.8 s)
   });
 }
 
@@ -1014,7 +1010,7 @@ void UserThreads() {
   hal::rtos::scheduler.create(CB_Transmit, {.name = "CB_Transmit", .stack_size = 2048, .priority = osPriorityNormal});
   hal::rtos::scheduler.create(CB_ReceiveCommand, {.name = "CB_ReceiveCommand", .stack_size = 2048, .priority = osPriorityNormal});
 
-  hal::rtos::scheduler.create(CB_NeoPixelBlink, {.name = "CB_NeoPixelBlink", .stack_size = 1024, .priority = osPriorityBelowNormal});
+  hal::rtos::scheduler.create(CB_NeoPixelBlink, {.name = "CB_NeoPixelBlink", .stack_size = 1024, .priority = osPriorityNormal});
 
   if constexpr (RA_USB_DEBUG_ENABLED)
     hal::rtos::scheduler.create(CB_DebugLogger, {.name = "CB_DebugLogger", .stack_size = 2048, .priority = osPriorityNormal});
@@ -1073,10 +1069,10 @@ void setup() {
   // Restore last flight state from EEPROM (only if data was previously defined)
   if constexpr (RA_EEPROM_READ_ENABLED) {
     // Zero altitude reference
+    EEPROM_Read();
     delay(4000);
     ReadAltimeter();
     alt_ref = data.altimeter[0].altitude_m;
-    EEPROM_Read();
     servo_a.write(pos_a);  // re-sync servo hardware to restored position
     servo_b.write(pos_b);
     Serial.println("[EEPROM] Restore attempted");
@@ -1722,6 +1718,9 @@ void HandleCommand(const String &rx) {
         for (size_t i = 0; i < 3; ++i) controller.driver.write_speed(ServoDriver::IDS[i], -100);
       } else if (strcmp(p4, "OFF") == 0) {
         for (size_t i = 0; i < 3; ++i) controller.driver.write_speed(ServoDriver::IDS[i], 0);
+      } else if (strcmp(p4, "ZERO") == 0) {
+        servo_target_angles = {0.0, 0.0, 0.0};
+        controller.servo_pid_update(servo_target_angles);
       } else {
         ++last_nack;
         return;

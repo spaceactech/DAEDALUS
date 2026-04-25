@@ -21,7 +21,7 @@ struct EEPROMStore {
   double   alt_ref;         // ground reference altitude (m MSL)
   float    pos_a;           // deployment servo A position (deg)
   float    pos_b;           // deployment servo B position (deg)
-  double   servo_target[3]; // paraglider servo target angles (deg)
+  double   servo_angles[3]; // paraglider servo target angles (deg)
 };
 
 static_assert(sizeof(EEPROMStore) <= 4096u, "EEPROMStore exceeds BKPSRAM size");
