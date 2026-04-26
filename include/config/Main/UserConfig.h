@@ -46,11 +46,11 @@ constexpr bool RA_RETAIN_DEPLOYMENT_ENABLED = true;
 // When true, EEPROM_Read() in setup() restores the last saved state if the
 // magic number and CRC are valid (i.e. data was previously defined / written).
 // Set false to always start with a clean slate.
-constexpr bool RA_EEPROM_READ_ENABLED = false;
+constexpr bool RA_EEPROM_READ_ENABLED = true;
 
 // EEPROM write interval (ms)
 constexpr uint32_t RA_EEPROM_WRITE_INTERVAL = 10000ul;  // 10 s
-
+  
 // Auto-Zero Altitude
 constexpr bool RA_AUTO_ZERO_ALT_ENABLED = false;
 
@@ -78,7 +78,7 @@ constexpr uint32_t RA_INTERVAL_TOF_READING = 100ul;  // ms
 constexpr uint32_t RA_INTERVAL_INA_READING = 200ul;  // ms
 
 // FSM Evaluation
-constexpr uint32_t RA_INTERVAL_FSM_EVAL = 5ul;  // ms
+constexpr uint32_t RA_INTERVAL_FSM_EVAL = 10ul;  // ms
 
 // FSM Evaluation interval maximum jitter tolerance
 constexpr uint32_t RA_JITTER_TOLERANCE_FSM_EVAL = 1ul;  // ms
@@ -87,7 +87,7 @@ constexpr uint32_t RA_JITTER_TOLERANCE_FSM_EVAL = 1ul;  // ms
 constexpr uint32_t RA_INTERVAL_CONSTRUCT = 100ul;  // ms
 
 // Data Construct
-constexpr uint32_t RA_INTERVAL_Controlling = 100ul;  // ms 20Hz
+constexpr uint32_t RA_INTERVAL_Controlling = 50ul;  // ms 20Hz
 
 // Altitude Auto-Zero
 constexpr uint32_t RA_INTERVAL_AUTOZERO = 50ul;  // ms
@@ -122,21 +122,21 @@ constexpr double RA_TRUE_TO_FALSE_RATIO = 1.0;  // (#True / #False), 0.5 = 33.3%
 constexpr bool RA_FSM_TIME_GUARD_ENABLED = true;
 
 // Safeguard minimum time to apogee - drogue deployment
-constexpr uint32_t RA_TIME_TO_APOGEE_MIN = 2 * 1000ul;  // ms
+constexpr uint32_t RA_TIME_TO_APOGEE_MIN = 10 * 1000ul;  // ms
 
 // Safeguard maximum time to apogee - drogue deployment
-constexpr uint32_t RA_TIME_TO_APOGEE_MAX = 10 * 1000ul;  // ms
+constexpr uint32_t RA_TIME_TO_APOGEE_MAX = 13.5 * 1000ul;  // ms
 
 // Launch acceleration: acc. threshold (GT)
-constexpr double RA_LAUNCH_ACC = 15 * 9.81;  // 9.81 m/s^2 (g)
-constexpr double RA_LAUNCH_ALT = 50.0;         // m
+constexpr double RA_LAUNCH_ACC = 9.81 * 5.0;  // 9.81 m/s^2 (g)
+constexpr double RA_LAUNCH_ALT = 20.0;         // m
 
 // Launch acceleration detection period
 constexpr uint32_t RA_LAUNCH_TON     = 200ul;  // ms
 constexpr uint32_t RA_LAUNCH_SAMPLES = RA_LAUNCH_TON / RA_INTERVAL_FSM_EVAL;
 
-// Apogee altitude (nominal for safeguard calculation)
-constexpr double RA_APOGEE_ALT = 950.0;  // m
+// Apogee altitude (nominal for safeguard calculation, runtime-adjustable via SET,APOGEE_ALT)
+inline double RA_APOGEE_ALT = 950.0;  // m
 
 // Velocity at Apogee: vel. threshold (LT)
 constexpr double RA_APOGEE_VEL = 12.5;  // m/s
@@ -146,47 +146,49 @@ constexpr uint32_t RA_APOGEE_TON     = 500ul;  // ms
 constexpr uint32_t RA_APOGEE_SAMPLES = RA_APOGEE_TON / RA_INTERVAL_FSM_EVAL;
 
 // Drogue Descent Theoretical Velocity
-constexpr double RA_DROGUE_VEL = 15.0;  // m/s
-constexpr double RA_MAIN_VEL   = 3.5;   // m/s
+constexpr double RA_DROGUE_VEL = 14.0;  // m/s
+constexpr double RA_MAIN_VEL   = 5.0;   // m/s
 
 // Main Deployment Event Altitude: altitude threshold (LT)
-constexpr double RA_MAIN_ALT_RAW = RA_APOGEE_ALT * 0.8;  // m
 constexpr double RA_INS_ALT_RAW  = 2.0;                  // m
 
 // INS deployment baro thresholds (runtime-adjustable via SET,INS_TOF / SET,INS_NEAR / SET,INS_CRIT)
 inline double RA_INS_TOF_THRESHOLD  = RA_INS_ALT_RAW;  // m — TOF trigger
 inline double RA_INS_NEAR_THRESHOLD = 15.0;             // m — baro near-ground trigger
-inline double RA_INS_CRIT_THRESHOLD = 3.0;              // m — baro critical trigger
+inline double RA_INS_CRIT_THRESHOLD = 2.0;              // m — baro critical trigger
 
 // Safeguard overspeed threshold to main deployment
 constexpr double RA_MAIN_OVERSPEED_VEL = RA_DROGUE_VEL * 1.5;
-
-// Safeguard nominal time to main deployment
-constexpr uint32_t RA_TIME_TO_MAIN_NOM = static_cast<uint32_t>((RA_APOGEE_ALT - RA_MAIN_ALT_RAW) / RA_DROGUE_VEL) * 1000ul;  // ms
-
-// Safeguard minimum time to main deployment
-constexpr uint32_t RA_TIME_TO_MAIN_MIN = RA_TIME_TO_MAIN_NOM * (1.00 - 0.15);  // ms
-
-// Safeguard maximum time to main deployment
-constexpr uint32_t RA_TIME_TO_MAIN_MAX = RA_TIME_TO_MAIN_NOM * (1.00 + 0.05);  // ms
 
 // Main Deployment Event Altitude detection period
 constexpr uint32_t RA_MAIN_TON     = 500ul;  // ms
 constexpr uint32_t RA_MAIN_SAMPLES = RA_MAIN_TON / RA_INTERVAL_FSM_EVAL;
 
 // Main Deployment Event Altitude detection period
-constexpr uint32_t RA_INS_TON     = 250ul;  // ms
+constexpr uint32_t RA_INS_TON     = 50ul;  // ms
 constexpr uint32_t RA_INS_SAMPLES = RA_INS_TON / RA_INTERVAL_FSM_EVAL;
 
 // Main Deployment Event Triggering Delay Compensation Multiplier
 constexpr double RA_MAIN_COMPENSATION_MULT = 2.0;
 constexpr double RA_INS_COMPENSATION_MULT  = 2.0;
 
-// Main Deployment Event Triggering Delay Compensation Value
-constexpr double RA_MAIN_ALT_COMPENSATED = RA_MAIN_ALT_RAW + RA_MAIN_COMPENSATION_MULT * RA_DROGUE_VEL * (static_cast<double>(RA_MAIN_TON) / 1000.);  // m
-
 // INS Deployment Event Triggering Delay Compensation Value
 constexpr double RA_INS_ALT_COMPENSATED = RA_INS_ALT_RAW + RA_INS_COMPENSATION_MULT * RA_MAIN_VEL * (static_cast<double>(RA_MAIN_TON) / 1000.);  // m
+
+// Main deployment altitude default (APOGEE state auto-overrides with apogee_raw * 0.8)
+constexpr double RA_MAIN_ALT_COMPENSATED = 40.0;  // m — fallback only
+
+// Main Deployment Event Altitude: altitude threshold (LT)
+constexpr double RA_MAIN_ALT_RAW = 760.0;  // m
+
+// Safeguard nominal time to main deployment
+inline uint32_t RA_TIME_TO_MAIN_NOM = static_cast<uint32_t>((RA_APOGEE_ALT - RA_MAIN_ALT_RAW) / RA_DROGUE_VEL) * 1000ul;  // ms
+
+// Safeguard minimum time to main deployment
+inline uint32_t RA_TIME_TO_MAIN_MIN = RA_TIME_TO_MAIN_NOM * (1.00 - 0.15);  // ms
+
+// Safeguard maximum time to main deployment
+inline uint32_t RA_TIME_TO_MAIN_MAX = RA_TIME_TO_MAIN_NOM * (1.00 + 0.05);  // ms
 
 // Velocity at Landed State: vel. threshold (LT)
 constexpr double RA_LANDED_VEL = 0.1;  // m/s
@@ -207,8 +209,6 @@ constexpr uint32_t RA_AUTOZERO_SAMPLES = RA_AUTOZERO_TON / RA_INTERVAL_AUTOZERO;
 constexpr uint32_t RA_SDLOGGER_INTERVAL_IDLE = 1000ul;  // 1 Hz
 constexpr uint32_t RA_SDLOGGER_INTERVAL_SLOW = 200ul;   // 5 Hz
 constexpr uint32_t RA_SDLOGGER_INTERVAL_FAST = 100ul;   // 10 Hz
-
-constexpr uint32_t DEPLOY_SHOULD_ACTIVATE = 40 * 60 * 1000ul;
 
 // Static assertions validate settings
 namespace details::assertions {

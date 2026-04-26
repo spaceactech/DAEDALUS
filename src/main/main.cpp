@@ -14,6 +14,7 @@
 
 // Hardware
 #include <STM32SD.h>
+#include <STM32LowPower.h>
 #include <Adafruit_NeoPixel.h>
 #include "SparkFun_BNO08x_Arduino_Library.h"
 #include <INA236.h>
@@ -21,7 +22,7 @@
 #include <Servo.h>
 
 /* BEGIN INCLUDE USER'S IMPLEMENTATIONS */
-#include "UserConfig.h"
+#include "config/Main/UserConfig.h"
 #include "UserPins.h"     // User's Pins Mapping
 #include "UserSensors.h"  // User's Hardware Implementations
 #include "UserFSM.h"      // User's FSM States
@@ -97,21 +98,22 @@ float pos_b = RA_SERVO_B_LOCK;
 /* END ACTUATORS */
 
 volatile bool ins_thresholds_dirty = false;
+volatile bool apogee_alt_dirty     = false;
 
 /* EEPROM — backed by STM32H725 Backup SRAM (0x38800000)
-   Direct memcpy: no Flash erase, no blocking, ~microseconds.          */
+   Direct memcpy: no Flash erase, no blocking, ~microseconds.*/
 
 void EEPROM_Write() {
   EEPROMStore s{};
   s.magic = EEPROM_MAGIC;
   memcpy(s.utc, data.utc, sizeof(s.utc));
   s.packet_count = packet_count;
-  s.state        = static_cast<uint8_t>(fsm.state());
-  s.alt_ref      = alt_ref;
-  s.pos_a        = pos_a;
-  s.pos_b        = pos_b;
+  // s.state        = static_cast<uint8_t>(fsm.state());
+  s.alt_ref = alt_ref;
+  s.pos_a   = pos_a;
+  s.pos_b   = pos_b;
   for (size_t i = 0; i < 3; ++i)
-    s.servo_target[i] = servo_target_angles[i];
+    s.servo_angles[i] = controller.last_angles[i];
 
   s.crc = eeprom_crc8(
     reinterpret_cast<const uint8_t *>(&s) + EEPROM_PAYLOAD_OFFSET,
@@ -136,12 +138,12 @@ void EEPROM_Read() {
 
   memcpy(data.utc, s.utc, sizeof(data.utc));
   packet_count = s.packet_count;
-  fsm.transfer(static_cast<UserState>(s.state));
+  // fsm.transfer(static_cast<UserState>(s.state));
   alt_ref = s.alt_ref;
   pos_a   = s.pos_a;
   pos_b   = s.pos_b;
   for (size_t i = 0; i < 3; ++i)
-    servo_target_angles[i] = s.servo_target[i];
+    controller.last_angles[i] = s.servo_angles[i];
 }
 
 /* BEGIN SD CARD */
@@ -150,8 +152,10 @@ FsUtil fs_sd;
 
 /* BEGIN FILTERS */
 xcore::vdt<FILTER_ORDER - 1> vdt(static_cast<double>(RA_INTERVAL_FSM_EVAL) * 0.001);
-Filter1T                     filter_acc;
-Filter1T                     filter_alt;
+FilterAcc                    filter_acc;
+FilterAlt                    filter_alt;
+FilterGPS                    filter_nav_n;  // state[0]=lat_deg (filtered),  state[1]=vn_m_s (filtered)
+FilterGPS                    filter_nav_e;  // state[0]=lon_deg (filtered),  state[1]=ve_m_s (filtered)
 /* END FILTERS */
 
 /* BEGIN USER PRIVATE VARIABLES */
@@ -530,10 +534,42 @@ void CB_ReadGNSS(void *) {
         hung_count = 0;
       }
     });
+
+    if (data.gps_fresh && gps_fixed) {
+      mtx_kf.exec([&]() {
+        // Update east F with current latitude so the coupling dt/(R_lat·cos(lat)) stays accurate
+        auto         F_e   = vdt.generate_F();
+        const double R_lon = GPS_R_LAT * std::cos(data.latitude * (PI / 180.0));
+        F_e[0][1] /= R_lon;
+        F_e[0][2] /= R_lon;
+        filter_nav_e.F = F_e;
+
+        // Feed position + velocity measurements into both GPS KFs
+        filter_nav_n.kf.update({data.latitude, data.velocity_n});
+        filter_nav_e.kf.update({data.longitude, data.velocity_e});
+      });
+    }
+
+    // Snapshot filtered GPS state, write back to data, and publish to nav_state.
+    // Only overwrite when KF has been seeded — otherwise keep raw GPS values.
+    double kf_lat, kf_lon, kf_vn, kf_ve;
+    mtx_kf.exec([&]() {
+      kf_lat = filter_nav_n.kf.state_vector()[0];
+      kf_lon = filter_nav_e.kf.state_vector()[0];
+      kf_vn  = filter_nav_n.kf.state_vector()[1];
+      kf_ve  = filter_nav_e.kf.state_vector()[1];
+    });
+    if (gps_fixed) {
+      data.latitude    = kf_lat;
+      data.longitude   = kf_lon;
+      data.velocity_n  = kf_vn;
+      data.velocity_e  = kf_ve;
+      current_location = {kf_lat, kf_lon};
+    }
     mtx_nav.exec([&]() {
-      nav_state.location = current_location;
-      nav_state.vn       = data.velocity_n;
-      nav_state.ve       = data.velocity_e;
+      nav_state.location = {kf_lat, kf_lon};
+      nav_state.vn       = kf_vn;
+      nav_state.ve       = kf_ve;
       nav_state.fixed    = gps_fixed;
     });
   });
@@ -617,6 +653,13 @@ void CB_EvalFSM(void *) {
       // Regenerate F with the new dt
       filter_acc.F = vdt.generate_F();
       filter_alt.F = vdt.generate_F();
+      {
+        auto F = vdt.generate_F();
+        F[0][1] /= GPS_R_LAT;
+        F[0][2] /= GPS_R_LAT;
+        filter_nav_n.F = F;
+        // filter_nav_e.F is updated in CB_ReadGNSS with the current cos(lat) factor
+      }
     }
 
 #ifdef RA_STACK_HWM_ENABLED
@@ -627,6 +670,8 @@ void CB_EvalFSM(void *) {
     mtx_kf.exec([&]() {
       filter_acc.kf.predict();
       filter_alt.kf.predict();
+      filter_nav_n.kf.predict();
+      filter_nav_e.kf.predict();
     });
 
     // FSM with predicted states
@@ -655,25 +700,18 @@ void CB_ConstructData(void *) {
 }
 
 void CB_SDLogger(void *) {
-  xcore::NbDelay write_delay(100ul, millis);
-  xcore::NbDelay flush_delay(1000ul, millis);
-
-  hal::rtos::interval_loop(1ul, [&]() -> void {
+  hal::rtos::interval_loop(1000ul, [&]() -> void {
 #ifdef RA_STACK_HWM_ENABLED
     stack_hwm.sdlog = uxTaskGetStackHighWaterMark(NULL);
 #endif
-    write_delay([&]() {
-      String snap;
-      mtx_buf.exec([&]() {
-        snap   = sd_buf;
-        sd_buf = "";
-      });
-      if (snap.length() == 0) return;
-      mtx_sdio.exec([&]() { fs_sd.file() << snap; });
+    static String snap;
+    mtx_buf.exec([&]() {
+      snap = sd_buf;  // reuses snap's buffer if cap >= sd_buf.length()
     });
-
-    flush_delay([&]() {
-      mtx_sdio.exec([&]() { fs_sd.file().flush(); });
+    if (snap.length() == 0) return;
+    mtx_sdio.exec([&]() {
+      fs_sd.file() << snap;
+      fs_sd.file().flush();
     });
   });
 }
@@ -701,6 +739,9 @@ void CB_Control(void *) {
     if (!snap.fixed) return;
 
     servo_target_angles = controller.guidance.update(snap.location, target_location, alt_agl, snap.vn, snap.ve, snap.yaw);
+
+    if (fsm.state() != UserState::PAYLOAD_REALEASE) return;
+
     controller.servo_pid_update(servo_target_angles);
   });
 }
@@ -857,7 +898,8 @@ void EvalINSDeploy() {
   static uint8_t baro_crit_idx  = 0;
   static bool    baro_crit_full = false;
 
-  sampler_tof.add_sample(static_cast<double>(data.tof));
+  if (pvalid.tof && data.tof > 0.5f)
+    sampler_tof.add_sample(static_cast<double>(data.tof));
   sampler_baro_near.add_sample(alt_agl);
   sampler_baro_critical.add_sample(alt_agl);
 
@@ -899,7 +941,7 @@ void EvalINSDeploy() {
 }
 
 void CB_INSDeploy(void *) {
-  hal::rtos::interval_loop(RA_INTERVAL_TOF_READING, [&]() -> void {
+  hal::rtos::interval_loop(RA_INTERVAL_FSM_EVAL, [&]() -> void {
 #ifdef RA_STACK_HWM_ENABLED
     stack_hwm.ins = uxTaskGetStackHighWaterMark(NULL);
 #endif
@@ -908,21 +950,17 @@ void CB_INSDeploy(void *) {
 }
 
 void CB_NeoPixelBlink(void *) {
-  static xcore::FfTimer led_ff(950, 50, millis);
+  static uint16_t hue = 0;
 
-  hal::rtos::interval_loop(1ul, [&]() -> void {
+  hal::rtos::interval_loop(200ul, [&]() -> void {
 #ifdef RA_STACK_HWM_ENABLED
     stack_hwm.neo = uxTaskGetStackHighWaterMark(NULL);
 #endif
-    led_ff.on_rising([]() -> void {
-            led.setPixelColor(0, led.Color(255, 0, 0));
-            led.setPixelColor(1, led.Color(255, 0, 0));
-            led.show();
-          })
-      .on_falling([]() -> void {
-        led.clear();
-        led.show();
-      });
+    uint32_t color = led.gamma32(led.ColorHSV(hue));
+    led.setPixelColor(0, color);
+    led.setPixelColor(1, color);
+    led.show();
+    hue += 1820;  // full rainbow in ~36 steps (36 × 50 ms = 1.8 s)
   });
 }
 
@@ -960,19 +998,20 @@ void UserThreads() {
     hal::rtos::scheduler.create(CB_SDLogger, {.name = "CB_SDLogger", .stack_size = 2048, .priority = osPriorityNormal});
   }
 
-  hal::rtos::scheduler.create(CB_EEPROMWrite, {.name = "CB_EEPROMWrite", .stack_size = 2048, .priority = osPriorityLow});
+  if (RA_EEPROM_READ_ENABLED)
+    hal::rtos::scheduler.create(CB_EEPROMWrite, {.name = "CB_EEPROMWrite", .stack_size = 2048, .priority = osPriorityLow});
 
   hal::rtos::scheduler.create(CB_Transmit, {.name = "CB_Transmit", .stack_size = 2048, .priority = osPriorityNormal});
   hal::rtos::scheduler.create(CB_ReceiveCommand, {.name = "CB_ReceiveCommand", .stack_size = 2048, .priority = osPriorityNormal});
 
-  hal::rtos::scheduler.create(CB_NeoPixelBlink, {.name = "CB_NeoPixelBlink", .stack_size = 1024, .priority = osPriorityBelowNormal});
+  hal::rtos::scheduler.create(CB_NeoPixelBlink, {.name = "CB_NeoPixelBlink", .stack_size = 1024, .priority = osPriorityNormal});
 
   if constexpr (RA_USB_DEBUG_ENABLED)
     hal::rtos::scheduler.create(CB_DebugLogger, {.name = "CB_DebugLogger", .stack_size = 2048, .priority = osPriorityNormal});
 }
 
 void setup() {
-  sd_buf.reserve(2048);
+  sd_buf.reserve(4096);
 
   /* BEGIN GPIO AND INTERFACES SETUP */
   UserSetupGPIO();
@@ -988,6 +1027,13 @@ void setup() {
   /* BEGIN FILTERS SETUP */
   filter_alt.F = vdt.generate_F();
   filter_acc.F = vdt.generate_F();
+  {
+    auto F = vdt.generate_F();
+    F[0][1] /= GPS_R_LAT;
+    F[0][2] /= GPS_R_LAT;
+    filter_nav_n.F = F;
+    filter_nav_e.F = F;  // east starts with equatorial approx; updated on first GPS fix
+  }
   /* END FILTERS SETUP */
 
   // IMU
@@ -1016,7 +1062,11 @@ void setup() {
 
   // Restore last flight state from EEPROM (only if data was previously defined)
   if constexpr (RA_EEPROM_READ_ENABLED) {
+    // Zero altitude reference
     EEPROM_Read();
+    delay(4000);
+    ReadAltimeter();
+    alt_ref = data.altimeter[0].altitude_m;
     servo_a.write(pos_a);  // re-sync servo hardware to restored position
     servo_b.write(pos_b);
     Serial.println("[EEPROM] Restore attempted");
@@ -1035,6 +1085,9 @@ void setup() {
   led.show();
 
   UserSetupSD();
+
+  LowPower.begin();
+  LowPower.enableWakeupFrom(&Xbee, []() {});  // UART wakes MCU; CB_ReceiveCommand RTOS task resumes normally
 
   /* BEGIN SYSTEM/KERNEL SETUP */
   hal::rtos::scheduler.initialize();
@@ -1113,6 +1166,11 @@ void EvalFSM() {
         state_millis_start = millis();
       }
 
+      if (apogee_alt_dirty) {
+        apogee_alt_dirty = false;
+        sampler.set_threshold(RA_APOGEE_ALT, /*recount*/ false);
+      }
+
       const double vel = filter_alt.kf.state_vector()[1];
       sampler.add_sample(std::abs(vel));
 
@@ -1121,10 +1179,10 @@ void EvalFSM() {
         if ((state_millis_elapsed >= RA_TIME_TO_APOGEE_MAX) ||
             (state_millis_elapsed >= RA_TIME_TO_APOGEE_MIN &&
              sampler.is_sampled() &&
-             sampler.under_by_over<double>() > RA_TRUE_TO_FALSE_RATIO))
+             sampler.over_by_under<double>() > RA_TRUE_TO_FALSE_RATIO))
           fsm.transfer(UserState::APOGEE);
       } else {
-        if (sampler.is_sampled() && sampler.under_by_over<double>() > RA_TRUE_TO_FALSE_RATIO)
+        if (sampler.is_sampled() && sampler.over_by_under<double>() > RA_TRUE_TO_FALSE_RATIO)
           fsm.transfer(UserState::APOGEE);
       }
       break;
@@ -1132,11 +1190,8 @@ void EvalFSM() {
 
     case UserState::APOGEE: {
       // <--- Next: always transfer --->
-      // reset Kalman
-      filter_acc.kf.predict();
-      filter_alt.kf.predict();
-      hal::rtos::delay_ms(1500);
       main_alt_threshold = apogee_raw * 0.8;
+      hal::rtos::delay_ms(1500);
       fsm.transfer(UserState::DESCENT);
       break;
     }
@@ -1167,13 +1222,13 @@ void EvalFSM() {
         const bool cond_timeout  = state_millis_elapsed >= RA_TIME_TO_MAIN_MAX;
         const bool cond_min_time = state_millis_elapsed >= RA_TIME_TO_MAIN_MIN;
         if (cond_timeout || (cond_min_time && cond_alt_lower)) {
-          servo_a.write(pos_a + 5);
+          servo_a.write(pos_a + 15);
           ActivateDeployment(0);
           fsm.transfer(UserState::PAYLOAD_REALEASE);
         }
       } else {
         if (cond_alt_lower) {
-          servo_a.write(pos_a + 5);
+          servo_a.write(pos_a + 15);
           ActivateDeployment(0);
           fsm.transfer(UserState::PAYLOAD_REALEASE);
         }
@@ -1189,12 +1244,11 @@ void EvalFSM() {
         sampler.set_threshold(RA_LANDED_VEL, /*recount*/ false);
       }
       //landed
-      const double vel = filter_alt.kf.state_vector()[1];
-      sampler.add_sample(std::abs(vel));
+      // const double vel = filter_alt.kf.state_vector()[1];
+      sampler.add_sample(alt_agl);
 
       if (sampler.is_sampled() &&
           sampler.under_by_over<double>() > RA_TRUE_TO_FALSE_RATIO) {
-        ActivateDeployment(1);
         fsm.transfer(UserState::LANDED);
       }
 
@@ -1235,18 +1289,16 @@ void ReadIMU() {
 }
 
 void ReadAltimeter() {
-  const double qnh_hpa = 1013.25;
-
   for (size_t i = 0; i < RA_NUM_ALTIMETER; ++i) {
     if (sensors_health.altimeter[i] != SensorStatus::SENSOR_OK ||
         !altimeter[i]->read())
       continue;
 
     if (simActivated && simEnabled) {
-      double sim_alt_msl             = altitude_msl_from_pressure(simPressure / 100.F, qnh_hpa);
+      double sim_alt_msl             = altitude_msl_from_pressure(simPressure / 100.F);
       data.altimeter[i].altitude_m   = sim_alt_msl;
       data.altimeter[i].pressure_hpa = simPressure / 100.F;
-      alt_agl                        = sim_alt_msl - alt_ref;
+      alt_agl                        = sim_alt_msl;
     } else {
       data.altimeter[i].pressure_hpa = altimeter[i]->pressure_hpa();
       data.altimeter[i].altitude_m   = altimeter[i]->altitude_m();
@@ -1402,165 +1454,366 @@ void AutoZeroAlt() {
 }
 
 void HandleCommand(const String &rx) {
-  if (rx.substring(0, 9) != "CMD,1043,") {
+  xcore::command_parser_t<128, 8, ','> parser;
+  if (!parser.parse(rx.c_str())) {
     ++last_nack;
     return;
   }
 
-  String cmd = rx.substring(9);
-  cmd.trim();
+  // Validate "CMD,1043," prefix
+  const char *p0 = parser.argv[0];
+  const char *p1 = parser.argv[1];
+  if (!p0 ||
+      strcmp(p0, "CMD") != 0 ||
+      !p1 ||
+      strcmp(p1, "1043") != 0) {
+    ++last_nack;
+    return;
+  }
 
-  strncpy(data.cmd_echo, cmd.c_str(), sizeof(data.cmd_echo) - 1);
-  data.cmd_echo[sizeof(data.cmd_echo) - 1] = '\0';  // sizeof = 16, safe for all commands
+  const char *p2 = parser.argv[2];  // primary command
+  const char *p3 = parser.argv[3];  // sub-command or first arg
+  const char *p4 = parser.argv[4];  // value
+
+  if (!p2) {
+    ++last_nack;
+    return;
+  }
+
+  // Echo the command portion (rx is unmodified by the parser)
+  strncpy(data.cmd_echo, rx.c_str() + 9, sizeof(data.cmd_echo) - 1);
+  data.cmd_echo[sizeof(data.cmd_echo) - 1] = '\0';
 
   /* ========== CX ========== */
-  if (cmd == "CX,ON") {
-    telemetry_enabled = true;
-  } else if (cmd == "CX,OFF") {
-    telemetry_enabled = false;
-
-    /* ========== SIM ========== */
-  } else if (cmd == "SIM,ENABLE") {
-    simEnabled = true;
-  } else if (cmd == "SIM,ACTIVATE") {
-    if (!simEnabled) {
+  if (strcmp(p2, "CX") == 0) {
+    if (!p3) {
       ++last_nack;
       return;
     }
-    simActivated = true;
-    simPressure  = static_cast<uint32_t>(data.altimeter[0].pressure_hpa * 100.0f);
-    data.mode[0] = 'S';
-    data.mode[1] = '\0';
-  } else if (cmd == "SIM,DISABLE") {
-    simEnabled   = false;
-    simActivated = false;
-    data.mode[0] = 'F';
-    data.mode[1] = '\0';
+    if (strcmp(p3, "ON") == 0)
+      telemetry_enabled = true;
+    else if (strcmp(p3, "OFF") == 0)
+      telemetry_enabled = false;
+    else {
+      ++last_nack;
+      return;
+    }
+
+    /* ========== SIM ========== */
+  } else if (strcmp(p2, "SIM") == 0) {
+    if (!p3) {
+      ++last_nack;
+      return;
+    }
+    if (strcmp(p3, "ENABLE") == 0) {
+      simEnabled = true;
+    } else if (strcmp(p3, "ACTIVATE") == 0) {
+      if (!simEnabled) {
+        ++last_nack;
+        return;
+      }
+      simActivated = true;
+      data.mode[0] = 'S';
+      data.mode[1] = '\0';
+    } else if (strcmp(p3, "DISABLE") == 0) {
+      simEnabled   = false;
+      simActivated = false;
+      data.mode[0] = 'F';
+      data.mode[1] = '\0';
+    } else {
+      ++last_nack;
+      return;
+    }
 
     /* ========== SIMP ========== */
-  } else if (cmd.substring(0, 5) == "SIMP,") {
+  } else if (strcmp(p2, "SIMP") == 0) {
     if (!simEnabled || !simActivated) {
       ++last_nack;
       return;
     }
-    int val = cmd.substring(5).toInt();
+    if (!p3) {
+      ++last_nack;
+      return;
+    }
+    char      *end;
+    const long val = strtol(p3, &end, 10);
+    if (end == p3 || *end != '\0') {
+      ++last_nack;
+      return;
+    }
     if (val >= 0) simPressure = static_cast<uint32_t>(val);
 
     /* ========== CAL ========== */
-  } else if (cmd == "CAL") {
-    ReadAltimeter();
-    alt_ref = data.altimeter[0].altitude_m;
-
-    /* ========== CAL,TOF,<mm> — VL53L1X offset calibration at given distance ========== */
-  } else if (cmd.substring(0, 8) == "CAL,TOF,") {
-    if (!pvalid.tof) {
-      ++last_nack;
-      return;
-    }
-    const int dist_mm = cmd.substring(8).toInt();
-    if (dist_mm <= 0) {
-      ++last_nack;
-      return;
-    }
-    mtx_i2c.exec([&]() { tof.calibrateOffset(static_cast<uint16_t>(dist_mm)); });
-
-    /* ========== CAL,MAG — BNO086 magnetometer offset calibration ========== */
-  } else if (cmd == "CAL,MAG,START") {
-    // Begin 30-second hard-iron offset measurement.
-    // Rotate sensor through all orientations while this runs.
-    if (!pvalid.bno) {
-      ++last_nack;
-      return;
-    }
-    mtx_i2c.exec([&]() { bno_cal.startMagCollection(bno); });
-
-  } else if (cmd == "CAL,NORTH") {
-    // Lock current heading as 0° (magnetic north).
-    // Send this command while the sensor is pointing steadily to magnetic north.
-    if (!pvalid.bno) {
-      ++last_nack;
-      return;
-    }
-    if (!bno_cal.isAwaitingNorth() && !bno_cal.isIdle()) {
-      ++last_nack;
-      return;
-    }
-    // Capture raw yaw (before any offset correction) from the latest sensor read.
-    // raw_yaw = 90 - bno.getYaw_deg, which is what ReadMAG uses before adding offsets.
-    float raw_yaw = 0.f;
-    mtx_i2c.exec([&]() {
-      // Trigger a fresh event so getYaw() reflects current orientation.
-      if (bno.getSensorEvent() &&
-          bno.getSensorEventID() == SENSOR_REPORTID_ROTATION_VECTOR) {
-        raw_yaw = 90.0f - bno.getYaw() * 180.0f / PI;
+  } else if (strcmp(p2, "CAL") == 0) {
+    if (!p3) {
+      ReadAltimeter();
+      alt_ref = data.altimeter[0].altitude_m;
+    } else if (strcmp(p3, "TOF") == 0) {
+      // VL53L1X offset calibration at given distance
+      if (!pvalid.tof) {
+        ++last_nack;
+        return;
       }
-    });
-    bno_cal.setNorthLock(raw_yaw);
-
-  } else if (cmd == "CAL,MAG,STATUS") {
-    if (!pvalid.bno) {
+      if (!p4) {
+        ++last_nack;
+        return;
+      }
+      char      *end;
+      const long dist_mm = strtol(p4, &end, 10);
+      if (end == p4 || *end != '\0' || dist_mm <= 0) {
+        ++last_nack;
+        return;
+      }
+      mtx_i2c.exec([&]() { tof.calibrateOffset(static_cast<uint16_t>(dist_mm)); });
+    } else if (strcmp(p3, "MAG") == 0) {
+      // BNO086 magnetometer calibration sub-commands
+      if (!p4) {
+        ++last_nack;
+        return;
+      }
+      if (strcmp(p4, "START") == 0) {
+        // Begin 30-second hard-iron offset measurement.
+        // Rotate sensor through all orientations while this runs.
+        if (!pvalid.bno) {
+          ++last_nack;
+          return;
+        }
+        mtx_i2c.exec([&]() { bno_cal.startMagCollection(bno); });
+      } else if (strcmp(p4, "STATUS") == 0) {
+        if (!pvalid.bno) {
+          ++last_nack;
+          return;
+        }
+        mtx_i2c.exec([&]() { bno_cal.printStatus(bno); });
+      } else if (strcmp(p4, "RESET") == 0) {
+        bno_cal.reset(static_cast<float>(BNO_MOUNT_OFFSET));
+      } else {
+        ++last_nack;
+        return;
+      }
+    } else if (strcmp(p3, "NORTH") == 0) {
+      // Lock current heading as 0° (magnetic north).
+      // Send this command while the sensor is pointing steadily to magnetic north.
+      if (!pvalid.bno) {
+        ++last_nack;
+        return;
+      }
+      if (!bno_cal.isAwaitingNorth() && !bno_cal.isIdle()) {
+        ++last_nack;
+        return;
+      }
+      // Capture raw yaw (before any offset correction) from the latest sensor read.
+      // raw_yaw = 90 - bno.getYaw_deg, which is what ReadMAG uses before adding offsets.
+      float raw_yaw = 0.f;
+      mtx_i2c.exec([&]() {
+        if (bno.getSensorEvent() &&
+            bno.getSensorEventID() == SENSOR_REPORTID_ROTATION_VECTOR) {
+          raw_yaw = 90.0f - bno.getYaw() * 180.0f / PI;
+        }
+      });
+      bno_cal.setNorthLock(raw_yaw);
+    } else {
       ++last_nack;
       return;
     }
-    mtx_i2c.exec([&]() { bno_cal.printStatus(bno); });
-
-  } else if (cmd == "CAL,MAG,RESET") {
-    bno_cal.reset(static_cast<float>(BNO_MOUNT_OFFSET));
 
     /* ========== SET ========== */
-  } else if (cmd.substring(0, 12) == "SET,MAIN_ALT") {
-    double raw         = cmd.substring(13).toDouble();
-    main_alt_threshold = raw + RA_MAIN_COMPENSATION_MULT * RA_DROGUE_VEL * (static_cast<double>(RA_MAIN_TON) / 1000.0);
-
-  } else if (cmd.substring(0, 12) == "SET,TX_RATE,") {
-    const int hz = cmd.substring(12).toInt();
-    if (hz >= 1 && hz <= 10)
-      tx_interval_ms = 1000u / static_cast<uint32_t>(hz);
-
-  } else if (cmd.substring(0, 12) == "SET,INS_TOF,") {
-    const double val = cmd.substring(12).toDouble();
-    if (val > 0) RA_INS_TOF_THRESHOLD = val;
-
-  } else if (cmd.substring(0, 13) == "SET,INS_NEAR,") {
-    const double val = cmd.substring(13).toDouble();
-    if (val > 0) RA_INS_NEAR_THRESHOLD = val;
-
-  } else if (cmd.substring(0, 13) == "SET,INS_CRIT,") {
-    const double val = cmd.substring(13).toDouble();
-    if (val > 0) RA_INS_CRIT_THRESHOLD = val;
+  } else if (strcmp(p2, "SET") == 0) {
+    if (!p3 || !p4) {
+      ++last_nack;
+      return;
+    }
+    if (strcmp(p3, "MAIN_ALT") == 0) {
+      char        *end;
+      const double raw = strtod(p4, &end);
+      if (end == p4 || *end != '\0' || raw <= 0) {
+        ++last_nack;
+        return;
+      }
+      main_alt_threshold = raw;
+    } else if (strcmp(p3, "APOGEE_ALT") == 0) {
+      char        *end;
+      const double val = strtod(p4, &end);
+      if (end == p4 || *end != '\0' || val <= 0) {
+        ++last_nack;
+        return;
+      }
+      RA_APOGEE_ALT    = val;
+      apogee_alt_dirty = true;
+    } else if (strcmp(p3, "TX_RATE") == 0) {
+      char      *end;
+      const long hz = strtol(p4, &end, 10);
+      if (end == p4 || *end != '\0') {
+        ++last_nack;
+        return;
+      }
+      if (hz >= 1 && hz <= 10)
+        tx_interval_ms = 1000u / static_cast<uint32_t>(hz);
+    } else if (strcmp(p3, "INS_TOF") == 0) {
+      char        *end;
+      const double val = strtod(p4, &end);
+      if (end == p4 || *end != '\0' || val <= 0) {
+        ++last_nack;
+        return;
+      }
+      RA_INS_TOF_THRESHOLD = val;
+      ins_thresholds_dirty = true;
+    } else if (strcmp(p3, "INS_NEAR") == 0) {
+      char        *end;
+      const double val = strtod(p4, &end);
+      if (end == p4 || *end != '\0' || val <= 0) {
+        ++last_nack;
+        return;
+      }
+      RA_INS_NEAR_THRESHOLD = val;
+      ins_thresholds_dirty  = true;
+    } else if (strcmp(p3, "INS_CRIT") == 0) {
+      char        *end;
+      const double val = strtod(p4, &end);
+      if (end == p4 || *end != '\0' || val <= 0) {
+        ++last_nack;
+        return;
+      }
+      RA_INS_CRIT_THRESHOLD = val;
+      ins_thresholds_dirty  = true;
+    } else {
+      ++last_nack;
+      return;
+    }
 
     /* ========== MEC ========== */
-  } else if (cmd == "MEC,PL,ON") {
-    pos_a = RA_SERVO_A_RELEASE;
-    servo_a.write(pos_a);
-  } else if (cmd == "MEC,PL,OFF") {
-    pos_a = RA_SERVO_A_LOCK;
-    servo_a.write(pos_a);
-  } else if (cmd == "MEC,INS,ON") {
-    pos_b = RA_SERVO_B_RELEASE;
-    servo_b.write(pos_b);
-  } else if (cmd == "MEC,INS,OFF") {
-    pos_b = RA_SERVO_B_LOCK;
-    servo_b.write(pos_b);
-  } else if (cmd == "MEC,PAR,CW") {
-    for (size_t i = 0; i < 3; ++i)
-      controller.driver.write_speed(ServoDriver::IDS[i], 100);
-  } else if (cmd == "MEC,PAR,ACW") {
-    for (size_t i = 0; i < 3; ++i)
-      controller.driver.write_speed(ServoDriver::IDS[i], -100);
-  } else if (cmd == "MEC,PAR,OFF") {
-    for (size_t i = 0; i < 3; ++i)
-      controller.driver.write_speed(ServoDriver::IDS[i], 0);
+  } else if (strcmp(p2, "MEC") == 0) {
+    if (!p3 || !p4) {
+      ++last_nack;
+      return;
+    }
+    if (strcmp(p3, "PL") == 0) {
+      if (strcmp(p4, "ON") == 0) {
+        pos_a = RA_SERVO_A_RELEASE;
+        servo_a.write(pos_a + 15);
+        hal::rtos::delay_ms(40);
+        servo_a.write(pos_a);
+      } else if (strcmp(p4, "OFF") == 0) {
+        pos_a = RA_SERVO_A_LOCK;
+        servo_a.write(pos_a);
+      } else {
+        ++last_nack;
+        return;
+      }
+    } else if (strcmp(p3, "INS") == 0) {
+      if (strcmp(p4, "ON") == 0) {
+        pos_b = RA_SERVO_B_RELEASE;
+        servo_b.write(pos_b);
+      } else if (strcmp(p4, "OFF") == 0) {
+        pos_b = RA_SERVO_B_LOCK;
+        servo_b.write(pos_b);
+      } else {
+        ++last_nack;
+        return;
+      }
+    } else if (strcmp(p3, "PAR") == 0) {
+      if (strcmp(p4, "CW") == 0) {
+        for (size_t i = 0; i < 3; ++i) controller.driver.write_speed(ServoDriver::IDS[i], 100);
+      } else if (strcmp(p4, "ACW") == 0) {
+        for (size_t i = 0; i < 3; ++i) controller.driver.write_speed(ServoDriver::IDS[i], -100);
+      } else if (strcmp(p4, "OFF") == 0) {
+        for (size_t i = 0; i < 3; ++i) controller.driver.write_speed(ServoDriver::IDS[i], 0);
+      } else if (strcmp(p4, "ZERO") == 0) {
+        servo_target_angles = {0.0, 0.0, 0.0};
+        controller.servo_pid_update(servo_target_angles);
+      } else {
+        ++last_nack;
+        return;
+      }
+    } else {
+      ++last_nack;
+      return;
+    }
 
     /* ========== SERVO ========== */
-  } else if (cmd.substring(0, 8) == "SERVO,A,") {
-    pos_a = constrain(cmd.substring(8).toFloat(), 0.0f, 180.0f);
-    servo_a.write(pos_a);
-  } else if (cmd.substring(0, 8) == "SERVO,B,") {
-    pos_b = constrain(cmd.substring(8).toFloat(), 0.0f, 180.0f);
-    servo_b.write(pos_b);
+  } else if (strcmp(p2, "SERVO") == 0) {
+    if (!p3 || !p4) {
+      ++last_nack;
+      return;
+    }
+    char *end;
+    if (strcmp(p3, "A") == 0) {
+      const double a = strtod(p4, &end);
+      if (end == p4 || *end != '\0') {
+        ++last_nack;
+        return;
+      }
+      pos_a = constrain(a, 0.0, 180.0);
+      servo_a.write(pos_a);
+    } else if (strcmp(p3, "B") == 0) {
+      const double b = strtod(p4, &end);
+      if (end == p4 || *end != '\0') {
+        ++last_nack;
+        return;
+      }
+      pos_b = constrain(b, 0.0, 180.0);
+      servo_b.write(pos_b);
+    } else {
+      ++last_nack;
+      return;
+    }
+
+    /* ========== TARGET ========== */
+  } else if (strcmp(p2, "TARGET") == 0) {
+    if (!p3 || !p4) {
+      ++last_nack;
+      return;
+    }
+    char        *end_lat, *end_lon;
+    const double lat = strtod(p3, &end_lat);
+    const double lon = strtod(p4, &end_lon);
+    if (end_lat == p3 || *end_lat != '\0' || end_lon == p4 || *end_lon != '\0') {
+      ++last_nack;
+      return;
+    }
+    target_location = {lat, lon};
+
+    /* ========== STATE ========== */
+  } else if (strcmp(p2, "STATE") == 0) {
+    if (!p3) {
+      ++last_nack;
+      return;
+    }
+    UserState target_state;
+    if (strcmp(p3, "IDLE_SAFE") == 0)
+      target_state = UserState::IDLE_SAFE;
+    else if (strcmp(p3, "LAUNCH_PAD") == 0)
+      target_state = UserState::LAUNCH_PAD;
+    else if (strcmp(p3, "ASCENT") == 0)
+      target_state = UserState::ASCENT;
+    else if (strcmp(p3, "APOGEE") == 0)
+      target_state = UserState::APOGEE;
+    else if (strcmp(p3, "DESCENT") == 0)
+      target_state = UserState::DESCENT;
+    else if (strcmp(p3, "PROBE_REALEASE") == 0)
+      target_state = UserState::PROBE_REALEASE;
+    else if (strcmp(p3, "PAYLOAD_REALEASE") == 0)
+      target_state = UserState::PAYLOAD_REALEASE;
+    else if (strcmp(p3, "LANDED") == 0)
+      target_state = UserState::LANDED;
+    else {
+      ++last_nack;
+      return;
+    }
+    fsm.transfer(target_state);
+
+    /* ========== SLEEP ========== */
+  } else if (strcmp(p2, "SLEEP") == 0) {
+    led.setPixelColor(0, led.Color(0, 0, 255));
+    led.setPixelColor(1, led.Color(0, 0, 255));
+    led.show();
+    LowPower.deepSleep();
+    /* ========== RESTART ========== */
+  } else if (strcmp(p2, "RESTART") == 0) {
+    // Wakeup trigger sent over Xbee — FreeRTOS resumes after deepSleep() returns
+
     /* ========== RESET ========== */
-  } else if (cmd == "RESET") {
+  } else if (strcmp(p2, "RESET") == 0) {
     delay(100);
     __NVIC_SystemReset();
 
@@ -1633,6 +1886,9 @@ void ConstructString() {
     << String(data.longitude, 4)  // GPS_LONGITUDE
     << data.siv                   // GPS_SATS
 
+    << data.velocity_e
+    << data.velocity_n
+
     << data.cmd_echo  // CMD_ECHO
 
     << data.heading
@@ -1687,20 +1943,29 @@ void ConstructString() {
     << String(data.longitude, 4)     // GPS_LONGITUDE
     << data.siv                      // GPS_SATS
 
+    << data.velocity_e
+    << data.velocity_n
     << data.cmd_echo  // CMD_ECHO
 
     << std::fmod(std::fmod(data.yaw - SPOOL_PHYSICAL_OFFSET, 360.0) + 360.0, 360.0)
     << data.tof
     << data.deploy
-    // FRESH bitmask: bit0=IMU bit1=ALT bit2=BNO bit3=GPS bit4=INA bit5=TOF
-    << (uint8_t) ((snap_imu << 0) | (snap_alt << 1) | (snap_bno << 2) | (snap_gps << 3) | (snap_ina << 4) | (snap_tof << 5))
-    << RA_LAUNCH_ALT;
+    << RA_APOGEE_ALT
+    << main_alt_threshold
+    << RA_LAUNCH_ALT
+    << RA_INS_CRIT_THRESHOLD
+    << controller.last_angles[0]          // SERVO_1_ANGLE (deg)
+    << controller.last_angles[1]          // SERVO_2_ANGLE (deg)
+    << controller.last_angles[2]          // SERVO_3_ANGLE (deg)
+    << controller.guidance.last_bearing;  // BEARING (deg)
+  // FRESH bitmask: bit0=IMU bit1=ALT bit2=BNO bit3=GPS bit4=INA bit5=TOF
+  // << (uint8_t) ((snap_imu << 0) | (snap_alt << 1) | (snap_bno << 2) | (snap_gps << 3) | (snap_ina << 4) | (snap_tof << 5));
 
   // Atomic update — lock held only for buffer mutation, not string building.
   // sd_buf accumulates rows; CB_SDLogger drains it by copy-and-clear.
   // tx_buf keeps only the latest frame (telemetry doesn't need history).
   mtx_buf.exec([&]() {
-    sd_buf += local_sd;
+    sd_buf = std::move(local_sd);
     tx_buf = std::move(local_tx);
   });
 }

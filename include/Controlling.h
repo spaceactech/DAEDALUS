@@ -24,8 +24,8 @@ constexpr double SPOOL_RADIUS = 0.0109;
 
 // rope pull limit ΔL=L±L2−2sL2−s2​sinα​
 // constexpr double dL_max       = 0.298758; //30 degree
-constexpr double dL_max       = 0.34714423; //35 degree
- 
+// constexpr double dL_max       = 0.34714423; //35 degree
+ constexpr double dL_max       = 0.39; //40 degree
 
 constexpr double ENC_TO_DEG = 360.0 / 4096.0;  // **Change
 
@@ -227,12 +227,6 @@ struct Guidance {
     delta[0] = target_velocity - velocity;
     delta[1] = target_heading - heading;
 
-    // if (delta[1] > 180)
-    //   delta[1] -= 360;
-
-    // if (delta[1] < -180)
-    //   delta[1] += 360;
-
     return delta;
   }
 
@@ -296,22 +290,29 @@ struct Guidance {
   }
 
   // ---- Control → servo angle ----
+  // Normalise by the dominant u so the most-active spool reaches dL_max;
+  // others scale proportionally. Negative components are clamped to zero (ropes can only pull).
 
   static numeric_vector<3> control_to_servo_angle(const numeric_vector<3> &u) {
     numeric_vector<3> angle{};
 
-    for (int i = 0; i < 3; i++) {
-      double scaled   = std::max(0.0, u[i]) * 0.75;
-      double dL       = scaled * dL_max;
-      double rotation = dL / (2.0 * M_PI * SPOOL_RADIUS);
+    double max_u = 0.0;
+    for (int i = 0; i < 3; i++)
+      if (u[i] > max_u) max_u = u[i];
 
-      angle[i] = rotation * 360.0;
+    for (int i = 0; i < 3; i++) {
+      double norm_u   = (max_u > 0.0) ? std::max(0.0, u[i]) / max_u : 0.0;
+      double dL       = norm_u * dL_max;
+      double rotation = dL / (2.0 * M_PI * SPOOL_RADIUS);
+      angle[i]        = rotation * 360.0;
     }
 
     return angle;
   }
 
   // ---- Main guidance update ----
+
+  double last_bearing = 0.0;
 
   numeric_vector<3> update(
     const GPSCoordinate &current,
@@ -320,30 +321,33 @@ struct Guidance {
     double               vN,
     double               vE,
     double               theta_offset) {
-    static double prev_dv     = 0;
-    static double prev_dtheta = 0;
-    static double at          = 0.2;  //Change
-    static double av          = 0.2;  //Change
+    // Circular EMA — smooths rapid bearing_body changes caused by parachute spin.
+    // sin/cos space avoids the 0°/360° wrap discontinuity.
+    static double bear_sin = 0;
+    static double bear_cos = 1;
 
-    double distance = calculate_distance(current, target);
-    double bearing  = calculate_bearing(current, target, theta_offset);
+    double distance      = calculate_distance(current, target);
+    double bearing_world = calculate_bearing(current, target, 0.0);          // North-relative
+    double bearing_body  = calculate_bearing(current, target, theta_offset);  // body-relative (sector selection)
+
+    double b_rad  = bearing_body * DEG_TO_RAD;
+    bear_sin      = ema_filter(std::sin(b_rad), bear_sin, at);
+    bear_cos      = ema_filter(std::cos(b_rad), bear_cos, at);
+    double s_bear = std::atan2(bear_sin, bear_cos) * RAD_TO_DEG;
+    bearing_body  = (s_bear < 0) ? s_bear + 360.0 : s_bear;
+    last_bearing  = bearing_body;
 
     auto   nav      = compute_velocity_navigation(vN, vE);
     double velocity = nav[0];
-    double heading  = nav[1];
+    double heading  = nav[1];  // world-frame GPS velocity heading (North-relative)
 
     double time_air        = compute_time_in_air(altitude);
     double target_velocity = compute_target_velocity(distance, time_air);
 
-    auto   delta  = compute_delta_from_target(velocity, heading, target_velocity, bearing);
-    double dv     = delta[0];
-    double dtheta = delta[1];
+    auto   delta = compute_delta_from_target(velocity, heading, target_velocity, bearing_world);
 
-    prev_dv     = ema_filter(dv, prev_dv, av);
-    prev_dtheta = ema_filter(dtheta, prev_dtheta, at);
-
-    auto target_vec = compute_target_vector(distance, prev_dtheta);
-    auto control    = compute_control_vector(target_vec, bearing);
+    auto target_vec = compute_target_vector(distance, bearing_body);
+    auto control    = compute_control_vector(target_vec, bearing_body);
 
     return control_to_servo_angle(control);
   }
@@ -377,7 +381,7 @@ struct Controller {
 
   void init_pid() {
     for (auto &pid: pid_controllers) {
-      pid.update_limits(-3500, 3500);
+      pid.update_limits(-1000, 1000);
       pid.update_dt(0.05);
     }
   }
@@ -394,7 +398,7 @@ struct Controller {
     const double                      &target_angle,
     const double                      &current_angle) {
     double speed = pid.update(target_angle, current_angle, 0.05);
-    speed        = constrain(speed, -3500.0, 3500.0);
+    speed        = constrain(speed, -1000.0, 1000.0);
 
     return static_cast<int16_t>(speed);
   }

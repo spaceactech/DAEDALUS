@@ -14,6 +14,7 @@
 
 // Hardware
 #include <STM32SD.h>
+#include <STM32LowPower.h>
 #include <Adafruit_NeoPixel.h>
 #include "SparkFun_BNO08x_Arduino_Library.h"
 #include <INA236.h>
@@ -699,25 +700,18 @@ void CB_ConstructData(void *) {
 }
 
 void CB_SDLogger(void *) {
-  xcore::NbDelay write_delay(100ul, millis);
-  xcore::NbDelay flush_delay(1000ul, millis);
-
-  hal::rtos::interval_loop(1ul, [&]() -> void {
+  hal::rtos::interval_loop(500ul, [&]() -> void {
 #ifdef RA_STACK_HWM_ENABLED
     stack_hwm.sdlog = uxTaskGetStackHighWaterMark(NULL);
 #endif
-    write_delay([&]() {
-      String snap;
-      mtx_buf.exec([&]() {
-        snap   = sd_buf;
-        sd_buf = "";
-      });
-      if (snap.length() == 0) return;
-      mtx_sdio.exec([&]() { fs_sd.file() << snap; });
+    static String snap;
+    mtx_buf.exec([&]() {
+      snap = sd_buf;  // reuses snap's buffer if cap >= sd_buf.length()
     });
-
-    flush_delay([&]() {
-      mtx_sdio.exec([&]() { fs_sd.file().flush(); });
+    if (snap.length() == 0) return;
+    mtx_sdio.exec([&]() {
+      fs_sd.file() << snap;
+      fs_sd.file().flush();
     });
   });
 }
@@ -1017,7 +1011,7 @@ void UserThreads() {
 }
 
 void setup() {
-  sd_buf.reserve(2048);
+  sd_buf.reserve(4096);
 
   /* BEGIN GPIO AND INTERFACES SETUP */
   UserSetupGPIO();
@@ -1091,6 +1085,9 @@ void setup() {
   led.show();
 
   UserSetupSD();
+
+  LowPower.begin();
+  LowPower.enableWakeupFrom(&Xbee, []() {});
 
   /* BEGIN SYSTEM/KERNEL SETUP */
   hal::rtos::scheduler.initialize();
@@ -1229,7 +1226,7 @@ void EvalFSM() {
         }
       } else {
         if (cond_alt_lower) {
-          servo_a.write(pos_a + 5);
+          servo_a.write(pos_a + 15);
           ActivateDeployment(0);
           fsm.transfer(UserState::PAYLOAD_REALEASE);
         }
@@ -1245,13 +1242,13 @@ void EvalFSM() {
         sampler.set_threshold(RA_LANDED_VEL, /*recount*/ false);
       }
       //landed
-      const double vel = filter_alt.kf.state_vector()[1];
-      sampler.add_sample(std::abs(vel));
+      // const double vel = filter_alt.kf.state_vector()[1];
+      sampler.add_sample(alt_agl);
 
       if (sampler.is_sampled() &&
           sampler.under_by_over<double>() > RA_TRUE_TO_FALSE_RATIO) {
         // ActivateDeployment(1);
-        // fsm.transfer(UserState::LANDED);
+        fsm.transfer(UserState::LANDED);
       }
 
       break;
@@ -1692,6 +1689,8 @@ void HandleCommand(const String &rx) {
     if (strcmp(p3, "PL") == 0) {
       if (strcmp(p4, "ON") == 0) {
         pos_a = RA_SERVO_A_RELEASE;
+        servo_a.write(pos_a + 15);
+        hal::rtos::delay_ms(40);
         servo_a.write(pos_a);
       } else if (strcmp(p4, "OFF") == 0) {
         pos_a = RA_SERVO_A_LOCK;
@@ -1773,6 +1772,46 @@ void HandleCommand(const String &rx) {
     }
     target_location = {lat, lon};
 
+    /* ========== STATE ========== */
+  } else if (strcmp(p2, "STATE") == 0) {
+    if (!p3) {
+      ++last_nack;
+      return;
+    }
+    UserState target_state;
+    if (strcmp(p3, "IDLE_SAFE") == 0)
+      target_state = UserState::IDLE_SAFE;
+    else if (strcmp(p3, "LAUNCH_PAD") == 0)
+      target_state = UserState::LAUNCH_PAD;
+    else if (strcmp(p3, "ASCENT") == 0)
+      target_state = UserState::ASCENT;
+    else if (strcmp(p3, "APOGEE") == 0)
+      target_state = UserState::APOGEE;
+    else if (strcmp(p3, "DESCENT") == 0)
+      target_state = UserState::DESCENT;
+    else if (strcmp(p3, "PROBE_REALEASE") == 0)
+      target_state = UserState::PROBE_REALEASE;
+    else if (strcmp(p3, "PAYLOAD_REALEASE") == 0)
+      target_state = UserState::PAYLOAD_REALEASE;
+    else if (strcmp(p3, "LANDED") == 0)
+      target_state = UserState::LANDED;
+    else {
+      ++last_nack;
+      return;
+    }
+    fsm.transfer(target_state);
+
+    /* ========== SLEEP ========== */
+  } else if (strcmp(p2, "SLEEP") == 0) {
+    led.setPixelColor(0, led.Color(0, 0, 255));
+    led.setPixelColor(1, led.Color(0, 0, 255));
+    led.show();
+    LowPower.deepSleep();
+    __NVIC_SystemReset();
+    /* ========== RESTART ========== */
+  } else if (strcmp(p2, "RESTART") == 0) {
+    // Wakeup trigger sent over Xbee — FreeRTOS resumes after deepSleep() returns
+
     /* ========== RESET ========== */
   } else if (strcmp(p2, "RESET") == 0) {
     delay(100);
@@ -1847,6 +1886,9 @@ void ConstructString() {
     << String(data.longitude, 4)  // GPS_LONGITUDE
     << data.siv                   // GPS_SATS
 
+    << data.velocity_e
+    << data.velocity_n
+
     << data.cmd_echo  // CMD_ECHO
 
     << data.heading
@@ -1901,6 +1943,8 @@ void ConstructString() {
     << String(data.longitude, 4)     // GPS_LONGITUDE
     << data.siv                      // GPS_SATS
 
+    << data.velocity_e
+    << data.velocity_n
     << data.cmd_echo  // CMD_ECHO
 
     << std::fmod(std::fmod(data.yaw - SPOOL_PHYSICAL_OFFSET, 360.0) + 360.0, 360.0)
@@ -1910,9 +1954,10 @@ void ConstructString() {
     << main_alt_threshold
     << RA_LAUNCH_ALT
     << RA_INS_CRIT_THRESHOLD
-    << controller.last_angles[0]   // SERVO_1_ANGLE (deg)
-    << controller.last_angles[1]   // SERVO_2_ANGLE (deg)
-    << controller.last_angles[2];  // SERVO_3_ANGLE (deg)
+    << controller.last_angles[0]          // SERVO_1_ANGLE (deg)
+    << controller.last_angles[1]          // SERVO_2_ANGLE (deg)
+    << controller.last_angles[2]          // SERVO_3_ANGLE (deg)
+    << controller.guidance.last_bearing;  // BEARING (deg)
   // FRESH bitmask: bit0=IMU bit1=ALT bit2=BNO bit3=GPS bit4=INA bit5=TOF
   // << (uint8_t) ((snap_imu << 0) | (snap_alt << 1) | (snap_bno << 2) | (snap_gps << 3) | (snap_ina << 4) | (snap_tof << 5));
 
@@ -1920,7 +1965,7 @@ void ConstructString() {
   // sd_buf accumulates rows; CB_SDLogger drains it by copy-and-clear.
   // tx_buf keeps only the latest frame (telemetry doesn't need history).
   mtx_buf.exec([&]() {
-    sd_buf += local_sd;
+    sd_buf = std::move(local_sd);
     tx_buf = std::move(local_tx);
   });
 }
