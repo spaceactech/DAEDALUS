@@ -202,6 +202,37 @@ struct NavState {
   bool          fixed = false;
 } nav_state;
 
+// Kinematic sim — advanced by CB_Control each tick when simActivated is true.
+namespace SimNav {
+  constexpr double START_LAT    = 13.722992512087279 + 0.000420;
+  constexpr double START_LON    = 100.51463610518176 + 0.000300;
+  constexpr double START_ALT    = 100.0;
+  constexpr double DESCENT_RATE = 2.0;
+  constexpr float  YAW_SPIN     = 15.0;
+  constexpr double INIT_VN      = -0.9;
+  constexpr double INIT_VE      = -0.6;
+
+  static double lat = START_LAT;
+  static double lon = START_LON;
+  static double alt = START_ALT;
+  static double vn  = INIT_VN;
+  static double ve  = INIT_VE;
+  static float  yaw = 30.0;
+
+  static void reset() {
+    lat = START_LAT; lon = START_LON; alt = START_ALT;
+    vn  = INIT_VN;   ve  = INIT_VE;   yaw = 30.0;
+  }
+
+  static void update(double dt) {
+    lat += (vn * dt) / EARTH_RADIUS_M * RAD_TO_DEG;
+    lon += (ve * dt) / (EARTH_RADIUS_M * std::cos(lat * DEG_TO_RAD)) * RAD_TO_DEG;
+    alt -= DESCENT_RATE * dt;
+    if (alt < 0.0) alt = 0.0;
+    yaw = std::fmod(yaw + YAW_SPIN * dt, 360.0f);
+  }
+}
+
 #ifdef RA_STACK_HWM_ENABLED
 struct StackHWM {
   UBaseType_t imu       = 0;
@@ -735,12 +766,27 @@ void CB_Control(void *) {
     stack_hwm.control = uxTaskGetStackHighWaterMark(NULL);
 #endif
     NavState snap;
-    mtx_nav.exec([&]() { snap = nav_state; });
-    if (!snap.fixed) return;
 
-    servo_target_angles = controller.guidance.update(snap.location, target_location, alt_agl, snap.vn, snap.ve, snap.yaw);
+    if (simActivated) {
+      // Advance kinematic sim — dt matches the task interval
+      SimNav::update(RA_INTERVAL_Controlling * 0.001);
+      snap.location = {SimNav::lat, SimNav::lon};
+      snap.vn       = SimNav::vn;
+      snap.ve       = SimNav::ve;
+      snap.yaw      = SimNav::yaw;
+      snap.fixed    = SimNav::alt > 0.0;
+      mtx_kf.exec([&]() { alt_agl = SimNav::alt; });
+    } else {
+      mtx_nav.exec([&]() { snap = nav_state; });
+      if (!snap.fixed) return;
+    }
 
-    if (fsm.state() != UserState::PAYLOAD_REALEASE) return;
+    servo_target_angles = controller.guidance.update(
+      snap.location, target_location, alt_agl, snap.vn, snap.ve, snap.yaw);
+
+    // In real flight only run the spool servos during paraglider descent.
+    // In sim always allow it so the control loop can be exercised on the bench.
+    if (!simActivated && fsm.state() != UserState::PAYLOAD_REALEASE) return;
 
     controller.servo_pid_update(servo_target_angles);
   });
@@ -1244,8 +1290,8 @@ void EvalFSM() {
         sampler.set_threshold(RA_LANDED_VEL, /*recount*/ false);
       }
       //landed
-      // const double vel = filter_alt.kf.state_vector()[1];
-      sampler.add_sample(alt_agl);
+      const double vel = filter_alt.kf.state_vector()[1];
+      sampler.add_sample(vel);
 
       if (sampler.is_sampled() &&
           sampler.under_by_over<double>() > RA_TRUE_TO_FALSE_RATIO) {
@@ -1513,6 +1559,7 @@ void HandleCommand(const String &rx) {
         return;
       }
       simActivated = true;
+      SimNav::reset();  // restart kinematic sim from initial conditions
       data.mode[0] = 'S';
       data.mode[1] = '\0';
     } else if (strcmp(p3, "DISABLE") == 0) {
@@ -1907,8 +1954,10 @@ void ConstructString() {
     << pos_a  // Servo A
     << pos_b
     << data.cpu_temp
-    // FRESH bitmask: bit0=IMU bit1=ALT bit2=BNO bit3=GPS bit4=INA bit5=TOF
-    << (uint8_t) ((snap_imu << 0) | (snap_alt << 1) | (snap_bno << 2) | (snap_gps << 3) | (snap_ina << 4) | (snap_tof << 5));
+    << controller.last_angles[0]          // SERVO_1_ANGLE (deg)
+    << controller.last_angles[1]          // SERVO_2_ANGLE (deg)
+    << controller.last_angles[2]          // SERVO_3_ANGLE (deg)
+    << controller.guidance.last_bearing;  // BEARING (deg)
 
   csv_stream_lf(local_tx)
     << 1043          // TEAM_ID

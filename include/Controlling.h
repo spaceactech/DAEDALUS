@@ -382,7 +382,7 @@ struct Controller {
   void init_pid() {
     for (auto &pid: pid_controllers) {
       pid.update_limits(-1000, 1000);
-      pid.update_dt(0.05);
+      pid.update_dt(0.01);
     }
   }
 
@@ -397,7 +397,7 @@ struct Controller {
     xcore::pid_controller_t<uint32_t> &pid,
     const double                      &target_angle,
     const double                      &current_angle) {
-    double speed = pid.update(target_angle, current_angle, 0.05);
+    double speed = pid.update(target_angle, current_angle, 0.01);
     speed        = constrain(speed, -1000.0, 1000.0);
 
     return static_cast<int16_t>(speed);
