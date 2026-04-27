@@ -382,7 +382,7 @@ struct Controller {
   void init_pid() {
     for (auto &pid: pid_controllers) {
       pid.update_limits(-1000, 1000);
-      pid.update_dt(0.005);
+      pid.update_dt(0.05);
     }
   }
 
@@ -397,7 +397,7 @@ struct Controller {
     xcore::pid_controller_t<uint32_t> &pid,
     const double                      &target_angle,
     const double                      &current_angle) {
-    double speed = pid.update(target_angle, current_angle, 0.005);
+    double speed = pid.update(target_angle, current_angle, 0.05);
     speed        = constrain(speed, -1000.0, 1000.0);
 
     return static_cast<int16_t>(speed);
@@ -406,7 +406,7 @@ struct Controller {
   // ---- Main servo PID update with automatic direction-swap ----
 
   void servo_pid_update(const numeric_vector<3> &target_angles) {
-    static xcore::NbDelay delay(5, millis);
+    static xcore::NbDelay delay(10, millis);
 
     delay([&]() {
       for (size_t i = 0; i < 3; ++i) {

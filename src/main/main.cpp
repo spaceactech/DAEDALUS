@@ -202,42 +202,6 @@ struct NavState {
   bool          fixed = false;
 } nav_state;
 
-// Simulated navigation state — active when simActivated is true.
-// Mirrors the Sim namespace in test_path; driven by CB_Control each tick.
-namespace SimNav {
-  constexpr double START_LAT    = 13.722992512087279 + 0.000420;  // +46.7 m N of target
-  constexpr double START_LON    = 100.51463610518176 + 0.000300;  // +32.5 m E of target
-  constexpr double START_ALT    = 100.0;                          // m AGL
-  constexpr double DESCENT_RATE = 2.0;                            // m/s
-  constexpr float  YAW_SPIN     = 15.0;                           // deg/s — parachute rotation
-  constexpr double INIT_VN      = -0.9;                           // m/s southward (toward target)
-  constexpr double INIT_VE      = -0.6;                           // m/s westward (toward target)
-
-  static double lat = START_LAT;
-  static double lon = START_LON;
-  static double alt = START_ALT;
-  static double vn  = INIT_VN;
-  static double ve  = INIT_VE;
-  static float  yaw = 30.0;
-
-  static void reset() {
-    lat = START_LAT;
-    lon = START_LON;
-    alt = START_ALT;
-    vn  = INIT_VN;
-    ve  = INIT_VE;
-    yaw = 30.0;
-  }
-
-  static void update(double dt) {
-    lat += (vn * dt) / EARTH_RADIUS_M * RAD_TO_DEG;
-    lon += (ve * dt) / (EARTH_RADIUS_M * std::cos(lat * DEG_TO_RAD)) * RAD_TO_DEG;
-    alt -= DESCENT_RATE * dt;
-    if (alt < 0.0) alt = 0.0;
-    yaw = std::fmod(yaw + YAW_SPIN * dt, 360.0f);
-  }
-}  // namespace SimNav
-
 #ifdef RA_STACK_HWM_ENABLED
 struct StackHWM {
   UBaseType_t imu       = 0;
@@ -299,7 +263,7 @@ void UserSetupActuator() {
   controller.init_pid();
   // Paraglider Servo
   ServoSerial.begin(1'000'000);
-  ServoSerial.setTimeout(5);  // at 1 Mbaud a 4-byte response arrives in ~40 µs; 2 ms is generous without burning CPU
+  ServoSerial.setTimeout(2);  // at 1 Mbaud a 4-byte response arrives in ~40 µs; 2 ms is generous without burning CPU
   controller.driver.hlscl.pSerial = &ServoSerial;
 
   // Initialize servo driver
@@ -772,17 +736,13 @@ void CB_Control(void *) {
 #endif
     NavState snap;
     mtx_nav.exec([&]() { snap = nav_state; });
-    // if (!snap.fixed) return;
+    if (!snap.fixed) return;
 
-    servo_target_angles = controller.guidance.update(snap.location, target_location, 100, snap.vn, snap.ve, snap.yaw);
+    servo_target_angles = controller.guidance.update(snap.location, target_location, alt_agl, snap.vn, snap.ve, snap.yaw);
 
-  
-    // servo_target_angles = controller.guidance.update(snap.location, target_location, alt_agl, snap.vn, snap.ve, snap.yaw);
-
-    // if (fsm.state() != UserState::PAYLOAD_REALEASE) return;
+    if (fsm.state() != UserState::PAYLOAD_REALEASE) return;
 
     controller.servo_pid_update(servo_target_angles);
-    Serial.println("Control");
   });
 }
 

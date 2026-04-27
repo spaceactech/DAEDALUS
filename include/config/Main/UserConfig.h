@@ -154,8 +154,8 @@ constexpr double RA_INS_ALT_RAW  = 2.0;                  // m
 
 // INS deployment baro thresholds (runtime-adjustable via SET,INS_TOF / SET,INS_NEAR / SET,INS_CRIT)
 inline double RA_INS_TOF_THRESHOLD  = RA_INS_ALT_RAW;  // m — TOF trigger
-inline double RA_INS_NEAR_THRESHOLD = 2.0;             // m — baro near-ground trigger
-inline double RA_INS_CRIT_THRESHOLD = 2.25;              // m — baro critical trigger
+inline double RA_INS_NEAR_THRESHOLD = 15.0;             // m — baro near-ground trigger
+inline double RA_INS_CRIT_THRESHOLD = 2.0;              // m — baro critical trigger
 
 // Safeguard overspeed threshold to main deployment
 constexpr double RA_MAIN_OVERSPEED_VEL = RA_DROGUE_VEL * 1.5;
