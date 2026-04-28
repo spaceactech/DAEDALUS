@@ -78,6 +78,7 @@ double   apogee_raw;
 uint32_t packet_count{};
 double   main_alt_threshold = RA_MAIN_ALT_COMPENSATED;  // Runtime-adjustable via SET,MAIN_ALT command
 uint32_t tx_interval_ms     = 1000;                     // Runtime-adjustable via SET,TX_RATE command
+bool     use_kf_gps         = false;                    // true=KF-smoothed GPS, false=raw GPS for guidance
 /* END PERSISTENT STATE */
 
 /* BEGIN DATA MEMORY */
@@ -220,8 +221,12 @@ namespace SimNav {
   static float  yaw = 30.0;
 
   static void reset() {
-    lat = START_LAT; lon = START_LON; alt = START_ALT;
-    vn  = INIT_VN;   ve  = INIT_VE;   yaw = 30.0;
+    lat = START_LAT;
+    lon = START_LON;
+    alt = START_ALT;
+    vn  = INIT_VN;
+    ve  = INIT_VE;
+    yaw = 30.0;
   }
 
   static void update(double dt) {
@@ -231,7 +236,7 @@ namespace SimNav {
     if (alt < 0.0) alt = 0.0;
     yaw = std::fmod(yaw + YAW_SPIN * dt, 360.0f);
   }
-}
+}  // namespace SimNav
 
 #ifdef RA_STACK_HWM_ENABLED
 struct StackHWM {
@@ -294,7 +299,8 @@ void UserSetupActuator() {
   controller.init_pid();
   // Paraglider Servo
   ServoSerial.begin(1'000'000);
-  ServoSerial.setTimeout(2);  // at 1 Mbaud a 4-byte response arrives in ~40 µs; 2 ms is generous without burning CPU
+  // NVIC_SetPriority(UART7_IRQn, configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY);
+  ServoSerial.setTimeout(5);  // at 1 Mbaud a 4-byte response arrives in ~40 µs; 2 ms is generous without burning CPU
   controller.driver.hlscl.pSerial = &ServoSerial;
 
   // Initialize servo driver
@@ -581,8 +587,7 @@ void CB_ReadGNSS(void *) {
       });
     }
 
-    // Snapshot filtered GPS state, write back to data, and publish to nav_state.
-    // Only overwrite when KF has been seeded — otherwise keep raw GPS values.
+    // Snapshot filtered GPS state. KF always runs; guidance uses KF or raw depending on use_kf_gps flag.
     double kf_lat, kf_lon, kf_vn, kf_ve;
     mtx_kf.exec([&]() {
       kf_lat = filter_nav_n.kf.state_vector()[0];
@@ -591,17 +596,27 @@ void CB_ReadGNSS(void *) {
       kf_ve  = filter_nav_e.kf.state_vector()[1];
     });
     if (gps_fixed) {
-      data.latitude    = kf_lat;
-      data.longitude   = kf_lon;
-      data.velocity_n  = kf_vn;
-      data.velocity_e  = kf_ve;
-      current_location = {kf_lat, kf_lon};
+      if (use_kf_gps) {
+        data.latitude    = kf_lat;
+        data.longitude   = kf_lon;
+        data.velocity_n  = kf_vn;
+        data.velocity_e  = kf_ve;
+        current_location = {kf_lat, kf_lon};
+      } else {
+        current_location = {data.latitude, data.longitude};
+      }
     }
     mtx_nav.exec([&]() {
-      nav_state.location = {kf_lat, kf_lon};
-      nav_state.vn       = kf_vn;
-      nav_state.ve       = kf_ve;
-      nav_state.fixed    = gps_fixed;
+      if (use_kf_gps) {
+        nav_state.location = {kf_lat, kf_lon};
+        nav_state.vn       = kf_vn;
+        nav_state.ve       = kf_ve;
+      } else {
+        nav_state.location = {data.latitude, data.longitude};
+        nav_state.vn       = data.velocity_n;
+        nav_state.ve       = data.velocity_e;
+      }
+      nav_state.fixed = gps_fixed;
     });
   });
 }
@@ -778,15 +793,12 @@ void CB_Control(void *) {
       mtx_kf.exec([&]() { alt_agl = SimNav::alt; });
     } else {
       mtx_nav.exec([&]() { snap = nav_state; });
-      if (!snap.fixed) return;
     }
 
-    servo_target_angles = controller.guidance.update(
-      snap.location, target_location, alt_agl, snap.vn, snap.ve, snap.yaw);
+    servo_target_angles = controller.guidance.update(snap.location, target_location, alt_agl, snap.vn, snap.ve, snap.yaw);
 
     // In real flight only run the spool servos during paraglider descent.
-    // In sim always allow it so the control loop can be exercised on the bench.
-    if (!simActivated && fsm.state() != UserState::PAYLOAD_REALEASE) return;
+    if (fsm.state() != UserState::PAYLOAD_REALEASE) return;
 
     controller.servo_pid_update(servo_target_angles);
   });
@@ -1130,10 +1142,10 @@ void setup() {
   led.setPixelColor(1, led.Color(0, 0, 255));
   led.show();
 
-  UserSetupSD();
+  // UserSetupSD();
 
-  LowPower.begin();
-  LowPower.enableWakeupFrom(&Xbee, []() {});  // UART wakes MCU; CB_ReceiveCommand RTOS task resumes normally
+  // LowPower.begin();
+  // LowPower.enableWakeupFrom(&Xbee, []() {});  // UART wakes MCU; CB_ReceiveCommand RTOS task resumes normally
 
   /* BEGIN SYSTEM/KERNEL SETUP */
   hal::rtos::scheduler.initialize();
@@ -1269,12 +1281,14 @@ void EvalFSM() {
         const bool cond_min_time = state_millis_elapsed >= RA_TIME_TO_MAIN_MIN;
         if (cond_timeout || (cond_min_time && cond_alt_lower)) {
           servo_a.write(pos_a + 15);
+          hal::rtos::delay_ms(100);
           ActivateDeployment(0);
           fsm.transfer(UserState::PAYLOAD_REALEASE);
         }
       } else {
         if (cond_alt_lower) {
           servo_a.write(pos_a + 15);
+          hal::rtos::delay_ms(100);
           ActivateDeployment(0);
           fsm.transfer(UserState::PAYLOAD_REALEASE);
         }
@@ -1287,11 +1301,10 @@ void EvalFSM() {
       if (fsm.on_enter()) {  // Run once
         sampler.reset();
         sampler.set_capacity(RA_LANDED_SAMPLES, /*recount*/ false);
-        sampler.set_threshold(RA_LANDED_VEL, /*recount*/ false);
+        sampler.set_threshold(RA_LANDED_ALT, /*recount*/ false);
       }
       //landed
-      const double vel = filter_alt.kf.state_vector()[1];
-      sampler.add_sample(vel);
+      sampler.add_sample(alt_agl);
 
       if (sampler.is_sampled() &&
           sampler.under_by_over<double>() > RA_TRUE_TO_FALSE_RATIO) {
@@ -1303,6 +1316,8 @@ void EvalFSM() {
 
     case UserState::LANDED: {
       if (fsm.on_enter()) {
+        for (size_t i = 0; i < 3; ++i)
+          controller.driver.write_speed(ServoDriver::IDS[i], 0);
         hal::rtos::delay_ms(60ul * 1000ul);  // let cameras record for 1 minute after landing
         digitalWrite(USER_GPIO_CAM1, LOW);
         digitalWrite(USER_GPIO_CAM2, LOW);
@@ -1572,6 +1587,21 @@ void HandleCommand(const String &rx) {
       return;
     }
 
+    /* ========== KF ========== */
+  } else if (strcmp(p2, "KF") == 0) {
+    if (!p3) {
+      ++last_nack;
+      return;
+    }
+    if (strcmp(p3, "ON") == 0) {
+      use_kf_gps = true;
+    } else if (strcmp(p3, "OFF") == 0) {
+      use_kf_gps = false;
+    } else {
+      ++last_nack;
+      return;
+    }
+
     /* ========== SIMP ========== */
   } else if (strcmp(p2, "SIMP") == 0) {
     if (!simEnabled || !simActivated) {
@@ -1736,9 +1766,9 @@ void HandleCommand(const String &rx) {
     }
     if (strcmp(p3, "PL") == 0) {
       if (strcmp(p4, "ON") == 0) {
-        pos_a = RA_SERVO_A_RELEASE;
         servo_a.write(pos_a + 15);
-        hal::rtos::delay_ms(40);
+        hal::rtos::delay_ms(100);
+        pos_a = RA_SERVO_A_RELEASE;
         servo_a.write(pos_a);
       } else if (strcmp(p4, "OFF") == 0) {
         pos_a = RA_SERVO_A_LOCK;
@@ -1761,8 +1791,12 @@ void HandleCommand(const String &rx) {
     } else if (strcmp(p3, "PAR") == 0) {
       if (strcmp(p4, "CW") == 0) {
         for (size_t i = 0; i < 3; ++i) controller.driver.write_speed(ServoDriver::IDS[i], 100);
+        hal::rtos::delay_ms(100);
+        for (size_t i = 0; i < 3; ++i) controller.driver.write_speed(ServoDriver::IDS[i], 0);
       } else if (strcmp(p4, "ACW") == 0) {
         for (size_t i = 0; i < 3; ++i) controller.driver.write_speed(ServoDriver::IDS[i], -100);
+        hal::rtos::delay_ms(100);
+        for (size_t i = 0; i < 3; ++i) controller.driver.write_speed(ServoDriver::IDS[i], 0);
       } else if (strcmp(p4, "OFF") == 0) {
         for (size_t i = 0; i < 3; ++i) controller.driver.write_speed(ServoDriver::IDS[i], 0);
       } else if (strcmp(p4, "ZERO") == 0) {
@@ -1957,6 +1991,9 @@ void ConstructString() {
     << controller.last_angles[0]          // SERVO_1_ANGLE (deg)
     << controller.last_angles[1]          // SERVO_2_ANGLE (deg)
     << controller.last_angles[2]          // SERVO_3_ANGLE (deg)
+    << servo_target_angles[0]             // SERVO_1_TARGET (deg)
+    << servo_target_angles[1]             // SERVO_2_TARGET (deg)
+    << servo_target_angles[2]             // SERVO_3_TARGET (deg)
     << controller.guidance.last_bearing;  // BEARING (deg)
 
   csv_stream_lf(local_tx)
@@ -2003,8 +2040,11 @@ void ConstructString() {
     << main_alt_threshold
     << RA_LAUNCH_ALT
     << RA_INS_CRIT_THRESHOLD
+    << servo_target_angles[0]             // SERVO_1_TARGET (deg)
     << controller.last_angles[0]          // SERVO_1_ANGLE (deg)
+    << servo_target_angles[1]             // SERVO_2_TARGET (deg)
     << controller.last_angles[1]          // SERVO_2_ANGLE (deg)
+    << servo_target_angles[2]             // SERVO_3_TARGET (deg)
     << controller.last_angles[2]          // SERVO_3_ANGLE (deg)
     << controller.guidance.last_bearing;  // BEARING (deg)
   // FRESH bitmask: bit0=IMU bit1=ALT bit2=BNO bit3=GPS bit4=INA bit5=TOF

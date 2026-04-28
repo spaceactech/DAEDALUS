@@ -104,7 +104,7 @@ constexpr int RA_SERVO_MIN = 500;                                // us PWM
 constexpr int RA_SERVO_MAX = 2450;                               // us PWM
 constexpr int RA_SERVO_CEN = (RA_SERVO_MIN + RA_SERVO_MAX) / 2;  // us PWM
 
-constexpr float RA_SERVO_A_RELEASE = 0;   // deg
+constexpr float RA_SERVO_A_RELEASE = 35;   // deg
 constexpr float RA_SERVO_A_LOCK    = 65;  // deg
 
 constexpr float RA_SERVO_B_RELEASE = 180;  // deg
@@ -135,7 +135,7 @@ constexpr uint32_t RA_TIME_TO_MAIN_MAX = 10 * 1000ul;  // ms
 
 // Launch acceleration: acc. threshold (GT)
 constexpr double RA_LAUNCH_ACC = 9.81 * 30.0;  // 9.81 m/s^2 (g)
-constexpr double RA_LAUNCH_ALT = 5.0;         // m
+constexpr double RA_LAUNCH_ALT = 10.0;         // m
 
 // Launch acceleration detection period
 constexpr uint32_t RA_LAUNCH_TON     = 200ul;  // ms
@@ -185,7 +185,7 @@ constexpr double RA_INS_ALT_COMPENSATED = RA_INS_ALT_RAW + RA_INS_COMPENSATION_M
 constexpr double RA_MAIN_ALT_COMPENSATED = 40.0;  // m — fallback only
 
 // Velocity at Landed State: vel. threshold (LT)
-constexpr double RA_LANDED_VEL = 0.1;  // m/s
+constexpr double RA_LANDED_ALT = 0.1;  // m/s
 
 // Velocity at Landed State detection period
 constexpr uint32_t RA_LANDED_TON     = 10000ul;  // ms

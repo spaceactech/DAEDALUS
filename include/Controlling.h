@@ -18,14 +18,15 @@ using numeric_vector = xcore::numeric_vector<Size>;
 // ---------------- CONSTANTS ----------------
 
 constexpr double EARTH_RADIUS_M     = 6371000.0;
-constexpr double DISTANCE_TO_TARGET = 59.16;
+constexpr double MAX_DISTANCE_TO_TARGET = 59.16;
+constexpr double MAX_SERVO_SPEED = 800.0;
 
 constexpr double SPOOL_RADIUS = 0.0109;
 
 // rope pull limit ΔL=L±L2−2sL2−s2​sinα​
 // constexpr double dL_max       = 0.298758; //30 degree
-// constexpr double dL_max       = 0.34714423; //35 degree
- constexpr double dL_max       = 0.39; //40 degree
+constexpr double dL_max       = 0.34714423; //35 degree
+//  constexpr double dL_max       = 0.39; //40 degree
 
 constexpr double ENC_TO_DEG = 360.0 / 4096.0;  // **Change
 
@@ -180,7 +181,7 @@ struct Guidance {
 
     double c = 2 * std::atan2(std::sqrt(a), std::sqrt(1 - a));
 
-    double ratio_distance = (EARTH_RADIUS_M * c) / DISTANCE_TO_TARGET;  // (0, 1)
+    double ratio_distance = (EARTH_RADIUS_M * c) / MAX_DISTANCE_TO_TARGET;  // (0, 1)
 
     if (ratio_distance >= 1)
       ratio_distance = 1;
@@ -294,14 +295,11 @@ struct Guidance {
   // others scale proportionally. Negative components are clamped to zero (ropes can only pull).
 
   static numeric_vector<3> control_to_servo_angle(const numeric_vector<3> &u) {
+    constexpr double TWO_INV_SQRT3 = 1.15470053838;  // max component for unit-distance input
     numeric_vector<3> angle{};
 
-    double max_u = 0.0;
-    for (int i = 0; i < 3; i++)
-      if (u[i] > max_u) max_u = u[i];
-
     for (int i = 0; i < 3; i++) {
-      double norm_u   = (max_u > 0.0) ? std::max(0.0, u[i]) / max_u : 0.0;
+      double norm_u   = std::min(std::max(0.0, u[i]) / TWO_INV_SQRT3, 1.0);
       double dL       = norm_u * dL_max;
       double rotation = dL / (2.0 * M_PI * SPOOL_RADIUS);
       angle[i]        = rotation * 360.0;
@@ -381,7 +379,7 @@ struct Controller {
 
   void init_pid() {
     for (auto &pid: pid_controllers) {
-      pid.update_limits(-1000, 1000);
+      pid.update_limits(-MAX_SERVO_SPEED, MAX_SERVO_SPEED);
       pid.update_dt(0.01);
     }
   }
@@ -398,7 +396,7 @@ struct Controller {
     const double                      &target_angle,
     const double                      &current_angle) {
     double speed = pid.update(target_angle, current_angle, 0.01);
-    speed        = constrain(speed, -1000.0, 1000.0);
+    speed        = constrain(speed, -MAX_SERVO_SPEED, MAX_SERVO_SPEED);
 
     return static_cast<int16_t>(speed);
   }

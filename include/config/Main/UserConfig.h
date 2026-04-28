@@ -46,7 +46,7 @@ constexpr bool RA_RETAIN_DEPLOYMENT_ENABLED = true;
 // When true, EEPROM_Read() in setup() restores the last saved state if the
 // magic number and CRC are valid (i.e. data was previously defined / written).
 // Set false to always start with a clean slate.
-constexpr bool RA_EEPROM_READ_ENABLED = true;
+constexpr bool RA_EEPROM_READ_ENABLED = false;
 
 // EEPROM write interval (ms)
 constexpr uint32_t RA_EEPROM_WRITE_INTERVAL = 10000ul;  // 10 s
@@ -104,7 +104,7 @@ constexpr int RA_SERVO_MIN = 500;                                // us PWM
 constexpr int RA_SERVO_MAX = 2450;                               // us PWM
 constexpr int RA_SERVO_CEN = (RA_SERVO_MIN + RA_SERVO_MAX) / 2;  // us PWM
 
-constexpr float RA_SERVO_A_RELEASE = 0;   // deg
+constexpr float RA_SERVO_A_RELEASE = 35;   // deg
 constexpr float RA_SERVO_A_LOCK    = 65;  // deg
 
 constexpr float RA_SERVO_B_RELEASE = 180;  // deg
@@ -136,7 +136,7 @@ constexpr uint32_t RA_LAUNCH_TON     = 200ul;  // ms
 constexpr uint32_t RA_LAUNCH_SAMPLES = RA_LAUNCH_TON / RA_INTERVAL_FSM_EVAL;
 
 // Apogee altitude (nominal for safeguard calculation, runtime-adjustable via SET,APOGEE_ALT)
-inline double RA_APOGEE_ALT = 950.0;  // m
+inline double RA_APOGEE_ALT = 850.0;  // m
 
 // Velocity at Apogee: vel. threshold (LT)
 constexpr double RA_APOGEE_VEL = 12.5;  // m/s
@@ -176,7 +176,7 @@ constexpr double RA_INS_COMPENSATION_MULT  = 2.0;
 constexpr double RA_INS_ALT_COMPENSATED = RA_INS_ALT_RAW + RA_INS_COMPENSATION_MULT * RA_MAIN_VEL * (static_cast<double>(RA_MAIN_TON) / 1000.);  // m
 
 // Main deployment altitude default (APOGEE state auto-overrides with apogee_raw * 0.8)
-constexpr double RA_MAIN_ALT_COMPENSATED = 40.0;  // m — fallback only
+inline double RA_MAIN_ALT_COMPENSATED = RA_APOGEE_ALT * 0.8;  // m — fallback only
 
 // Main Deployment Event Altitude: altitude threshold (LT)
 constexpr double RA_MAIN_ALT_RAW = 760.0;  // m
@@ -191,7 +191,7 @@ inline uint32_t RA_TIME_TO_MAIN_MIN = RA_TIME_TO_MAIN_NOM * (1.00 - 0.15);  // m
 inline uint32_t RA_TIME_TO_MAIN_MAX = RA_TIME_TO_MAIN_NOM * (1.00 + 0.05);  // ms
 
 // Velocity at Landed State: vel. threshold (LT)
-constexpr double RA_LANDED_VEL = 0.1;  // m/s
+constexpr double RA_LANDED_ALT = 0.1;  // m/s
 
 // Velocity at Landed State detection period
 constexpr uint32_t RA_LANDED_TON     = 10000ul;  // ms

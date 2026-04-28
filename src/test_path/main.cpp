@@ -9,7 +9,7 @@
 
 // ── Simulation ────────────────────────────────────────────────────────────────
 // Flip to false to use real hardware sensors.
-constexpr bool SIM_ENABLE = false;
+constexpr bool SIM_ENABLE = true;
 
 namespace Sim {
   // Starting ~57 m NE of target at 100 m AGL — matches DISTANCE_TO_TARGET
