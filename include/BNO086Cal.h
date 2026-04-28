@@ -140,12 +140,22 @@ public:
 
   // ── autoNorthLock() ────────────────────────────────────────────────────────
   // Call once in setup() after bno.begin() and bno_cal.init().
-  // Polls the BNO086 (up to timeout_ms) for the first valid rotation vector,
-  // then automatically locks that reading as magnetic north.
-  // Works because BNO086 restores its DCD from sensor flash on every boot —
-  // it already knows where magnetic north is without any manual command.
+  // Skipped when valid calibration already exists in BKPSRAM — the saved
+  // mount_offset is used as-is.  Only runs on first boot (no BKPSRAM data)
+  // and waits for quat accuracy >= 2 before locking, so that a low-quality
+  // first reading cannot overwrite a previously good calibration.
   void autoNorthLock(BNO08x &bno, uint32_t timeout_ms = 5000) {
-    Serial.println("[MAGCAL] Auto north-lock — waiting for first heading...");
+    // If valid calibration already saved, trust it — don't overwrite with a
+    // low-accuracy boot reading.  User can force a new lock via CAL,NORTH.
+    if (_ptr()->magic == BNO_CAL_MAGIC) {
+      Serial.printf("[MAGCAL] Saved calibration present — skipping auto north-lock. MountOffset=%.2f°\n",
+                    mount_offset);
+      delay(2000);
+      bno.enableRotationVector();
+      return;
+    }
+
+    Serial.println("[MAGCAL] No saved calibration — auto north-lock waiting for first heading...");
 
     // After cold boot the BNO086 restores DCD from its internal flash before
     // asserting INT and producing reports — this can take up to 2 s.

@@ -1,172 +1,121 @@
 #include <Arduino.h>
-#include <SparkFun_u-blox_GNSS_v3.h>
-#include <lib_xcore>
-#include <xcore/math_module>
-#include <cmath>
-
+// This demo explores two reports (SH2_ARVR_STABILIZED_RV and SH2_GYRO_INTEGRATED_RV) both can be used to give 
+// quartenion and euler (yaw, pitch roll) angles.  Toggle the FAST_MODE define to see other report.  
+// Note sensorValue.status gives calibration accuracy (which improves over time)
+#include <Adafruit_BNO08x.h>
 #include "UserPins.h"
-#include "custom_kalman.h"
+// For SPI mode, we need a CS pin
+#define BNO08X_CS 10
+#define BNO08X_INT 9
 
-// ─── Bus & sensor instances ───────────────────────────────────
-TwoWire        i2c4(USER_GPIO_I2C4_SDA, USER_GPIO_I2C4_SCL);
-SFE_UBLOX_GNSS m10s;
 
-// ─── Config ───────────────────────────────────────────────────
-static constexpr uint8_t  GPS_ADDR        = 0x42;
-static constexpr uint32_t GPS_NAV_FREQ_HZ = 10;
-static constexpr uint16_t MAX_WAIT_MS     = 1100;
-static constexpr uint16_t NUM_SAMPLES     = 200;
-static constexpr double   DT              = 1.0 / GPS_NAV_FREQ_HZ;  // 0.1 s
+// #define FAST_MODE
 
-// ─── GPS Kalman filters (mirrors main/main.cpp filter_nav_n / filter_nav_e) ──
-// North axis: states [lat_deg, vN_m_s, aN_m_s2]
-// East  axis: states [lon_deg, vE_m_s, aE_m_s2]
-xcore::vdt<FILTER_ORDER - 1> vdt(DT);
-FilterGPS filter_nav_n;
-FilterGPS filter_nav_e;
+// For SPI mode, we also need a RESET 
+//#define BNO08X_RESET 5
+// but not for I2C or UART
+TwoWire i2c4(USER_GPIO_I2C4_SDA, USER_GPIO_I2C4_SCL);
 
-void setup() {
-  Serial.begin(460800);
-  delay(2000);
-  Serial.println("\n=== M10S GPS Kalman Filter Comparison ===");
+struct euler_t {
+  float yaw;
+  float pitch;
+  float roll;
+} ypr;
 
-  // ── Reset M10S ───────────────────────────────────────────────
-  pinMode(M10S_RESET, OUTPUT);
-  digitalWrite(M10S_RESET, HIGH);
-  delay(20);
-  digitalWrite(M10S_RESET, LOW);
-  delay(100);
-  digitalWrite(M10S_RESET, HIGH);
-  delay(500);
+Adafruit_BNO08x  bno08x(BNO08X_RESET);
+sh2_SensorValue_t sensorValue;
 
-  // ── I2C ─────────────────────────────────────────────────────
-  i2c4.setClock(400000);
+#ifdef FAST_MODE
+  // Top frequency is reported to be 1000Hz (but freq is somewhat variable)
+  sh2_SensorId_t reportType = SH2_GYRO_INTEGRATED_RV;
+  long reportIntervalUs = 2000;
+#else
+  // Top frequency is about 250Hz but this report is more accurate
+  sh2_SensorId_t reportType = SH2_ARVR_STABILIZED_RV;
+  long reportIntervalUs = 5000;
+#endif
+void setReports(sh2_SensorId_t reportType, long report_interval) {
+  Serial.println("Setting desired reports");
+  if (! bno08x.enableReport(reportType, report_interval)) {
+    Serial.println("Could not enable stabilized remote vector");
+  }
+}
+
+void setup(void) {
+
+  Serial.begin(115200);
+  while (!Serial) delay(10);     // will pause Zero, Leonardo, etc until serial console opens
+
+  Serial.println("Adafruit BNO08x test!");
+
   i2c4.begin();
-  i2c4.setTimeout(50);
-
-  // ── Init M10S ────────────────────────────────────────────────
-  Serial.print("[GPS] Init ... ");
-  if (!m10s.begin(i2c4, GPS_ADDR)) {
-    Serial.println("FAIL — check wiring");
-    while (true) delay(1000);
+  // Try to initialize!
+  if (!bno08x.begin_I2C(0x4B, &i2c4)) {
+  //if (!bno08x.begin_UART(&Serial1)) {  // Requires a device with > 300 byte UART buffer!
+  //if (!bno08x.begin_SPI(BNO08X_CS, BNO08X_INT)) {
+    Serial.println("Failed to find BNO08x chip");
+    while (1) { delay(10); }
   }
-  Serial.println("OK");
+  Serial.println("BNO08x Found!");
 
-  m10s.setI2COutput(COM_TYPE_UBX, VAL_LAYER_RAM_BBR, MAX_WAIT_MS);
-  m10s.setNavigationFrequency(GPS_NAV_FREQ_HZ, VAL_LAYER_RAM_BBR, MAX_WAIT_MS);
-  m10s.setAutoPVT(true, VAL_LAYER_RAM_BBR, MAX_WAIT_MS);
 
-  // ── Airborne 4g dynamic model ────────────────────────────────
-  Serial.print("[GPS] Dynamic model → AIRBORNE_4g ... ");
-  if (m10s.setDynamicModel(DYN_MODEL_AIRBORNE4g, VAL_LAYER_RAM_BBR, MAX_WAIT_MS))
-    Serial.println("OK");
-  else
-    Serial.println("FAIL (continuing anyway)");
+  setReports(reportType, reportIntervalUs);
 
-  // ── Init KF transition matrices — same pattern as main/main.cpp setup() ──
-  {
-    auto F = vdt.generate_F();
-    F[0][1] /= GPS_R_LAT;
-    F[0][2] /= GPS_R_LAT;
-    filter_nav_n.F = F;
-    filter_nav_e.F = F;  // east starts with equatorial approx; updated on first GPS fix
-  }
+  Serial.println("Reading events");
+  delay(100);
+}
 
-  Serial.println("\nWaiting for GPS fix ...");
-  Serial.println(
-    "n,"
-    "lat_raw,lon_raw,alt_msl_m,"
-    "vN_raw_ms,vE_raw_ms,"
-    "lat_kf,lon_kf,"
-    "vN_kf_ms,vE_kf_ms,"
-    "dN_m,dE_m,"      // raw - filtered position, converted to metres
-    "dvN_ms,dvE_ms,"  // raw - filtered velocity
-    "siv,fix,hAcc_mm,vAcc_mm,sAcc_mm"
-  );
+void quaternionToEuler(float qr, float qi, float qj, float qk, euler_t* ypr, bool degrees = false) {
+
+    float sqr = sq(qr);
+    float sqi = sq(qi);
+    float sqj = sq(qj);
+    float sqk = sq(qk);
+
+    ypr->yaw = atan2(2.0 * (qi * qj + qk * qr), (sqi - sqj - sqk + sqr));
+    ypr->pitch = asin(-2.0 * (qi * qk - qj * qr) / (sqi + sqj + sqk + sqr));
+    ypr->roll = atan2(2.0 * (qj * qk + qi * qr), (-sqi - sqj + sqk + sqr));
+
+    if (degrees) {
+      ypr->yaw *= RAD_TO_DEG;
+      ypr->pitch *= RAD_TO_DEG;
+      ypr->roll *= RAD_TO_DEG;
+    }
+}
+
+void quaternionToEulerRV(sh2_RotationVectorWAcc_t* rotational_vector, euler_t* ypr, bool degrees = false) {
+    quaternionToEuler(rotational_vector->real, rotational_vector->i, rotational_vector->j, rotational_vector->k, ypr, degrees);
+}
+
+void quaternionToEulerGI(sh2_GyroIntegratedRV_t* rotational_vector, euler_t* ypr, bool degrees = false) {
+    quaternionToEuler(rotational_vector->real, rotational_vector->i, rotational_vector->j, rotational_vector->k, ypr, degrees);
 }
 
 void loop() {
-  static uint16_t sample_n = 0;
-  static bool     done     = false;
 
-  if (done) return;
-
-  // getPVT() blocks until a fresh NAV-PVT packet arrives (or times out)
-  if (!m10s.getPVT(MAX_WAIT_MS)) return;
-
-  const uint8_t fix = m10s.getFixType();
-  const uint8_t siv = m10s.getSIV();
-
-  if (siv < 4) return;
-
-  // ── Raw GPS measurements ─────────────────────────────────────
-  const double   lat  = static_cast<double>(m10s.getLatitude())    * 1.e-7;
-  const double   lon  = static_cast<double>(m10s.getLongitude())   * 1.e-7;
-  const double   alt  = static_cast<double>(m10s.getAltitudeMSL()) * 1.e-3;
-  const double   vN   = static_cast<double>(m10s.getNedNorthVel()) * 1.e-3;
-  const double   vE   = static_cast<double>(m10s.getNedEastVel())  * 1.e-3;
-  const uint32_t hAcc = m10s.getHorizontalAccEst();  // mm
-  const uint32_t vAcc = m10s.getVerticalAccEst();    // mm
-  const uint32_t sAcc = m10s.getSpeedAccEst();       // mm/s
-
-  // ── Update East F with current latitude — mirrors CB_ReadGNSS in main.cpp ─
-  {
-    auto         F_e   = vdt.generate_F();
-    const double R_lon = GPS_R_LAT * std::cos(lat * (PI / 180.0));
-    F_e[0][1] /= R_lon;
-    F_e[0][2] /= R_lon;
-    filter_nav_e.F = F_e;
+  if (bno08x.wasReset()) {
+    Serial.print("sensor was reset ");
+    setReports(reportType, reportIntervalUs);
+  }
+  
+  if (bno08x.getSensorEvent(&sensorValue)) {
+    // in this demo only one report type will be received depending on FAST_MODE define (above)
+    switch (sensorValue.sensorId) {
+      case SH2_ARVR_STABILIZED_RV:
+        quaternionToEulerRV(&sensorValue.un.arvrStabilizedRV, &ypr, true);
+      case SH2_GYRO_INTEGRATED_RV:
+        // faster (more noise?)
+        quaternionToEulerGI(&sensorValue.un.gyroIntegratedRV, &ypr, true);
+        break;
+    }
+    static long last = 0;
+    long now = micros();
+    Serial.print(now - last);             Serial.print("\t");
+    last = now;
+    Serial.print(sensorValue.status);     Serial.print("\t");  // This is accuracy in the range of 0 to 3
+    Serial.print(ypr.yaw);                Serial.print("\t");
+    Serial.print(ypr.pitch);              Serial.print("\t");
+    Serial.println(ypr.roll);
   }
 
-  // ── Predict → Update — same order as CB_EvalFSM + CB_ReadGNSS in main.cpp ─
-  filter_nav_n.kf.predict();
-  filter_nav_e.kf.predict();
-  filter_nav_n.kf.update({lat, vN});
-  filter_nav_e.kf.update({lon, vE});
-
-  // ── Snapshot filtered states — mirrors the KF snapshot in CB_ReadGNSS ─────
-  const double kf_lat = filter_nav_n.kf.state_vector()[0];
-  const double kf_lon = filter_nav_e.kf.state_vector()[0];
-  const double kf_vN  = filter_nav_n.kf.state_vector()[1];
-  const double kf_vE  = filter_nav_e.kf.state_vector()[1];
-
-  // ── Delta: raw − filtered, position converted to metres ──────────────────
-  const double R_lon = GPS_R_LAT * std::cos(lat * (PI / 180.0));
-  const double dN_m  = (lat - kf_lat) * GPS_R_LAT;
-  const double dE_m  = (lon - kf_lon) * R_lon;
-  const double dvN   = vN - kf_vN;
-  const double dvE   = vE - kf_vE;
-
-  ++sample_n;
-
-  Serial.print(sample_n);   Serial.print(',');
-  // Raw
-  Serial.print(lat, 7);     Serial.print(',');
-  Serial.print(lon, 7);     Serial.print(',');
-  Serial.print(alt, 3);     Serial.print(',');
-  Serial.print(vN, 4);      Serial.print(',');
-  Serial.print(vE, 4);      Serial.print(',');
-  // Filtered
-  Serial.print(kf_lat, 7);  Serial.print(',');
-  Serial.print(kf_lon, 7);  Serial.print(',');
-  Serial.print(kf_vN, 4);   Serial.print(',');
-  Serial.print(kf_vE, 4);   Serial.print(',');
-  // Delta (raw - filtered)
-  Serial.print(dN_m, 4);    Serial.print(',');
-  Serial.print(dE_m, 4);    Serial.print(',');
-  Serial.print(dvN, 4);     Serial.print(',');
-  Serial.print(dvE, 4);     Serial.print(',');
-  // Diagnostics
-  Serial.print(siv);        Serial.print(',');
-  Serial.print(fix);        Serial.print(',');
-  Serial.print(hAcc);       Serial.print(',');
-  Serial.print(vAcc);       Serial.print(',');
-  Serial.println(sAcc);
-
-  if (sample_n >= NUM_SAMPLES) {
-    done = true;
-    Serial.print("\n=== ");
-    Serial.print(NUM_SAMPLES);
-    Serial.println(" samples collected — done ===");
-  }
 }

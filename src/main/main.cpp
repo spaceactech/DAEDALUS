@@ -197,10 +197,11 @@ uint32_t LoggerInterval() {
 // Kept separate from mtx_i2c so CB_Control never blocks on an I2C transaction.
 struct NavState {
   GPSCoordinate location{};
-  double        vn    = 0;
-  double        ve    = 0;
-  double        yaw   = 0;
-  bool          fixed = false;
+  double        vn      = 0;
+  double        ve      = 0;
+  double        yaw     = 0;
+  double        heading = 0;  // GPS ground-track heading (deg, North-relative) from getHeading()
+  bool          fixed   = false;
 } nav_state;
 
 // Kinematic sim — advanced by CB_Control each tick when simActivated is true.
@@ -213,20 +214,22 @@ namespace SimNav {
   constexpr double INIT_VN      = -0.9;
   constexpr double INIT_VE      = -0.6;
 
-  static double lat = START_LAT;
-  static double lon = START_LON;
-  static double alt = START_ALT;
-  static double vn  = INIT_VN;
-  static double ve  = INIT_VE;
-  static float  yaw = 30.0;
+  static double lat     = START_LAT;
+  static double lon     = START_LON;
+  static double alt     = START_ALT;
+  static double vn      = INIT_VN;
+  static double ve      = INIT_VE;
+  static float  yaw     = 30.0;
+  static double heading = 0.0;  // ground-track heading derived from vn/ve
 
   static void reset() {
-    lat = START_LAT;
-    lon = START_LON;
-    alt = START_ALT;
-    vn  = INIT_VN;
-    ve  = INIT_VE;
-    yaw = 30.0;
+    lat     = START_LAT;
+    lon     = START_LON;
+    alt     = START_ALT;
+    vn      = INIT_VN;
+    ve      = INIT_VE;
+    yaw     = 30.0;
+    heading = std::fmod(std::atan2(ve, vn) * RAD_TO_DEG + 360.0, 360.0);
   }
 
   static void update(double dt) {
@@ -234,7 +237,8 @@ namespace SimNav {
     lon += (ve * dt) / (EARTH_RADIUS_M * std::cos(lat * DEG_TO_RAD)) * RAD_TO_DEG;
     alt -= DESCENT_RATE * dt;
     if (alt < 0.0) alt = 0.0;
-    yaw = std::fmod(yaw + YAW_SPIN * dt, 360.0f);
+    yaw     = std::fmod(yaw + YAW_SPIN * dt, 360.0f);
+    heading = std::fmod(std::atan2(ve, vn) * RAD_TO_DEG + 360.0, 360.0);
   }
 }  // namespace SimNav
 
@@ -616,7 +620,8 @@ void CB_ReadGNSS(void *) {
         nav_state.vn       = data.velocity_n;
         nav_state.ve       = data.velocity_e;
       }
-      nav_state.fixed = gps_fixed;
+      nav_state.heading = data.heading_gps;
+      nav_state.fixed   = gps_fixed;
     });
   });
 }
@@ -789,17 +794,18 @@ void CB_Control(void *) {
       snap.vn       = SimNav::vn;
       snap.ve       = SimNav::ve;
       snap.yaw      = SimNav::yaw;
+      snap.heading  = SimNav::heading;
       snap.fixed    = SimNav::alt > 0.0;
       mtx_kf.exec([&]() { alt_agl = SimNav::alt; });
     } else {
       mtx_nav.exec([&]() { snap = nav_state; });
     }
 
-    servo_target_angles = controller.guidance.update(snap.location, target_location, alt_agl, snap.vn, snap.ve, snap.yaw);
 
     // In real flight only run the spool servos during paraglider descent.
-    if (fsm.state() != UserState::PAYLOAD_REALEASE) return;
+    // if (fsm.state() != UserState::PAYLOAD_REALEASE) return;
 
+    servo_target_angles = controller.guidance.update(snap.location, target_location, alt_agl, snap.vn, snap.ve, snap.yaw + SPOOL_PHYSICAL_OFFSET, snap.heading);
     controller.servo_pid_update(servo_target_angles);
   });
 }
@@ -1248,7 +1254,7 @@ void EvalFSM() {
 
     case UserState::APOGEE: {
       // <--- Next: always transfer --->
-      main_alt_threshold = apogee_raw * 0.8;
+      // main_alt_threshold = apogee_raw * 0.8;
       hal::rtos::delay_ms(1500);
       fsm.transfer(UserState::DESCENT);
       break;
@@ -1275,7 +1281,7 @@ void EvalFSM() {
       const bool cond_alt_lower = sampler.is_sampled() &&
                                   sampler.under_by_over<double>() > RA_TRUE_TO_FALSE_RATIO;
 
-      if constexpr (RA_FSM_TIME_GUARD_ENABLED) {
+      if constexpr (false) {
         state_millis_elapsed     = millis() - state_millis_start;
         const bool cond_timeout  = state_millis_elapsed >= RA_TIME_TO_MAIN_MAX;
         const bool cond_min_time = state_millis_elapsed >= RA_TIME_TO_MAIN_MIN;
@@ -1376,16 +1382,17 @@ void ReadGNSS() {
     // packets automatically. Only commit data when a fresh packet arrived,
     // exactly as getSensorEvent() gates the BNO reads.
     if (m10s.checkUblox()) {
-      data.siv             = m10s.getSIV();
-      data.hh              = m10s.getHour();
-      data.mm              = m10s.getMinute();
-      data.ss              = m10s.getSecond();
+      data.siv             = m10s.getSIV(UBLOX_CUSTOM_MAX_WAIT);
+      data.hh              = m10s.getHour(UBLOX_CUSTOM_MAX_WAIT);
+      data.mm              = m10s.getMinute(UBLOX_CUSTOM_MAX_WAIT);
+      data.ss              = m10s.getSecond(UBLOX_CUSTOM_MAX_WAIT);
       data.timestamp_epoch = m10s.getUnixEpoch(data.timestamp_us);
       data.latitude        = static_cast<double>(m10s.getLatitude()) * 1.e-7;
       data.longitude       = static_cast<double>(m10s.getLongitude()) * 1.e-7;
       data.altitude_msl    = static_cast<float>(m10s.getAltitudeMSL()) * 1.e-3f;
       data.velocity_n      = static_cast<double>(m10s.getNedNorthVel()) * 1.e-3;
       data.velocity_e      = static_cast<double>(m10s.getNedEastVel()) * 1.e-3;
+      data.heading_gps     = m10s.getHeading(UBLOX_CUSTOM_MAX_WAIT) * 1.e-5;
 
       snprintf(data.utc, sizeof(data.utc), "%02d:%02d:%02d",
                data.hh, data.mm, data.ss);
@@ -1426,7 +1433,7 @@ void ReadMAG() {
     data.roll  = bno.getRoll() * 180.0 / PI;
     data.pitch = bno.getPitch() * 180.0 / PI;
 
-    // raw_yaw: ENU convention from BNO086 (CCW-positive, 0 = east)
+    // raw_yaw: ENU convention from BNO086 (CCW-positive, 0 = east).
     // Convert to CW-from-north (compass bearing) with the dynamic mount offset.
     const double raw_yaw = 90.0 - bno.getYaw() * 180.0 / PI + bno_cal.mount_offset + MAGNETIC_DECLINATION;
     data.yaw             = std::fmod(std::fmod(raw_yaw, 360.0) + 360.0, 360.0);
@@ -2034,19 +2041,19 @@ void ConstructString() {
     << data.cmd_echo  // CMD_ECHO
 
     << std::fmod(std::fmod(data.yaw - SPOOL_PHYSICAL_OFFSET, 360.0) + 360.0, 360.0)
+    << data.heading_gps
     << data.tof
     << data.deploy
     << RA_APOGEE_ALT
     << main_alt_threshold
     << RA_LAUNCH_ALT
     << RA_INS_CRIT_THRESHOLD
-    << servo_target_angles[0]             // SERVO_1_TARGET (deg)
-    << controller.last_angles[0]          // SERVO_1_ANGLE (deg)
-    << servo_target_angles[1]             // SERVO_2_TARGET (deg)
-    << controller.last_angles[1]          // SERVO_2_ANGLE (deg)
-    << servo_target_angles[2]             // SERVO_3_TARGET (deg)
-    << controller.last_angles[2]          // SERVO_3_ANGLE (deg)
-    << controller.guidance.last_bearing;  // BEARING (deg)
+    << servo_target_angles[0]      // SERVO_1_TARGET (deg)
+    << controller.last_angles[0]   // SERVO_1_ANGLE (deg)
+    << servo_target_angles[1]      // SERVO_2_TARGET (deg)
+    << controller.last_angles[1]   // SERVO_2_ANGLE (deg)
+    << servo_target_angles[2]      // SERVO_3_TARGET (deg)
+    << controller.last_angles[2];  // SERVO_3_ANGLE (deg);  // BEARING (deg)
   // FRESH bitmask: bit0=IMU bit1=ALT bit2=BNO bit3=GPS bit4=INA bit5=TOF
   // << (uint8_t) ((snap_imu << 0) | (snap_alt << 1) | (snap_bno << 2) | (snap_gps << 3) | (snap_ina << 4) | (snap_tof << 5));
 

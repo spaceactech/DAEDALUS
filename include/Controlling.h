@@ -30,13 +30,16 @@ constexpr double dL_max       = 0.34714423; //35 degree
 
 constexpr double ENC_TO_DEG = 360.0 / 4096.0;  // **Change
 
-// PID gains (tune later)
-constexpr double KP = 2.5;
+// KP reduced from 2.5 and KD raised from 0.15 to damp 478 deg/s peak yaw oscillations
+constexpr double KP = 1.5;
 constexpr double KI = 0.0;
 constexpr double KD = 0.15;
 
+// Bearing EMA alpha — controls force-vector smoothing (sector selection uses raw bearing)
 constexpr double at = 0.2;
-constexpr double av = 0.2;
+
+// Drift correction gain — how aggressively to steer against GPS drift (0=none, 1=full reflection)
+constexpr double DRIFT_CORRECTION_GAIN = 1;
 
 // ---------------- STRUCTS ----------------
 
@@ -318,34 +321,48 @@ struct Guidance {
     double               altitude,
     double               vN,
     double               vE,
-    double               theta_offset) {
-    // Circular EMA — smooths rapid bearing_body changes caused by parachute spin.
-    // sin/cos space avoids the 0°/360° wrap discontinuity.
+    double               theta_offset,
+    double               gps_heading) {
+    // sin/cos EMA — avoids 0°/360° wrap discontinuity
     static double bear_sin = 0;
     static double bear_cos = 1;
 
-    double distance      = calculate_distance(current, target);
-    double bearing_world = calculate_bearing(current, target, 0.0);          // North-relative
-    double bearing_body  = calculate_bearing(current, target, theta_offset);  // body-relative (sector selection)
+    double velocity = std::sqrt(vN * vN + vE * vE);
 
-    double b_rad  = bearing_body * DEG_TO_RAD;
-    bear_sin      = ema_filter(std::sin(b_rad), bear_sin, at);
-    bear_cos      = ema_filter(std::cos(b_rad), bear_cos, at);
-    double s_bear = std::atan2(bear_sin, bear_cos) * RAD_TO_DEG;
-    bearing_body  = (s_bear < 0) ? s_bear + 360.0 : s_bear;
-    last_bearing  = bearing_body;
+    // Bearing to target in global frame (North-referenced).
+    // Magnetometer is always used for body-frame conversion — cables are
+    // body-fixed so we need body orientation, not GPS drift direction.
+    double abs_bearing = calculate_bearing(current, target, 0.0);
 
-    auto   nav      = compute_velocity_navigation(vN, vE);
-    double velocity = nav[0];
-    double heading  = nav[1];  // world-frame GPS velocity heading (North-relative)
+    // Drift correction: when moving, the GPS heading tells us where we are
+    // actually going.  Steer against the drift so the net trajectory points
+    // at the target.  Example: drifting East (90°), target is North (0°) →
+    // steer NW (315°) to cancel the eastward carry.
+    // corrected = abs_bearing − 0.5 × (gps_heading − abs_bearing)
+    double corrected_bearing = abs_bearing;
+    if (velocity >= 1.0) {
+      double drift_error = std::fmod(gps_heading - abs_bearing + 540.0, 360.0) - 180.0;
+      corrected_bearing  = std::fmod(abs_bearing - drift_error * DRIFT_CORRECTION_GAIN + 360.0, 360.0);
+    }
 
-    double time_air        = compute_time_in_air(altitude);
-    double target_velocity = compute_target_velocity(distance, time_air);
+    // Convert global bearing to body frame using magnetometer
+    double distance    = calculate_distance(current, target);
+    double bearing_raw = std::fmod(corrected_bearing - theta_offset + 360.0, 360.0);
 
-    auto   delta = compute_delta_from_target(velocity, heading, target_velocity, bearing_world);
+    // EMA smooths spin oscillations — applied to force-vector direction only.
+    // Sector selection stays on raw bearing: EMA lag (up to ~70° avg at 139 deg/s)
+    // would otherwise slip into the wrong 120° cable sector.
+    double b_rad       = bearing_raw * DEG_TO_RAD;
+    bear_sin           = ema_filter(std::sin(b_rad), bear_sin, at);
+    bear_cos           = ema_filter(std::cos(b_rad), bear_cos, at);
+    double s_bear      = std::atan2(bear_sin, bear_cos) * RAD_TO_DEG;
+    double bear_smooth = (s_bear < 0) ? s_bear + 360.0 : s_bear;
+    last_bearing       = bear_smooth;
 
-    auto target_vec = compute_target_vector(distance, bearing_body);
-    auto control    = compute_control_vector(target_vec, bearing_body);
+    compute_time_in_air(altitude);
+
+    auto target_vec = compute_target_vector(distance, bear_smooth);
+    auto control    = compute_control_vector(target_vec, bearing_raw);
 
     return control_to_servo_angle(control);
   }
@@ -429,6 +446,8 @@ struct Controller {
 
           speed = static_cast<int16_t>(
             compute_speed(pid_controllers[i], target_angles[i], last_angles[i]) * dirs[i]);
+        } else {
+          wrong_accum[i] = 0;  // clear stale accumulation while in deadband
         }
 
         prev_angles[i] = last_angles[i];

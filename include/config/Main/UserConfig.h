@@ -26,7 +26,7 @@ constexpr bool RA_LED_ENABLED = true;
 constexpr bool RA_USB_DEBUG_ENABLED = true;
 
 constexpr double MAGNETIC_DECLINATION  = 0.0;
-constexpr double BNO_MOUNT_OFFSET      = 0.0;   // PCB mounting correction (degrees)
+constexpr double BNO_MOUNT_OFFSET      = 106.6;   // PCB mounting correction (degrees)
 
 // Spool 1 physical offset from magnetometer reference (degrees)
 // constexpr double SPOOL_PHYSICAL_OFFSET = 0.0;  // For test
@@ -176,7 +176,7 @@ constexpr double RA_INS_COMPENSATION_MULT  = 2.0;
 constexpr double RA_INS_ALT_COMPENSATED = RA_INS_ALT_RAW + RA_INS_COMPENSATION_MULT * RA_MAIN_VEL * (static_cast<double>(RA_MAIN_TON) / 1000.);  // m
 
 // Main deployment altitude default (APOGEE state auto-overrides with apogee_raw * 0.8)
-inline double RA_MAIN_ALT_COMPENSATED = RA_APOGEE_ALT * 0.8;  // m — fallback only
+inline double RA_MAIN_ALT_COMPENSATED = 500;  // m — fallback only
 
 // Main Deployment Event Altitude: altitude threshold (LT)
 constexpr double RA_MAIN_ALT_RAW = 760.0;  // m
