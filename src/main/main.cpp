@@ -57,7 +57,8 @@ SensorIMU *imu[RA_NUM_IMU] = {
   new IMU_ISM256(USER_GPIO_ISM256_NSS),  // IMU #1
 };
 SensorAltimeter *altimeter[RA_NUM_ALTIMETER] = {
-  new Altimeter_BMP581(USER_GPIO_BMP581_NSS),  // Altimeter #1
+  new Altimeter_BMP581(USER_GPIO_BMP581_NSS),  // Altimeter #1 — SPI
+  new Altimeter_MS5611(MS5611_ADDR, i2c4),     // Altimeter #2 — I2C
 };
 /* END SENSOR INSTANCES */
 
@@ -519,7 +520,8 @@ void CB_ReadAltimeter(void *) {
 #ifdef RA_STACK_HWM_ENABLED
     stack_hwm.altimeter = uxTaskGetStackHighWaterMark(NULL);
 #endif
-    mtx_spi.exec(ReadAltimeter);
+    mtx_spi.exec([]() { ReadAltimeter(0); });   // BMP581 — SPI
+    mtx_i2c.exec([]() { ReadAltimeter(1); });   // MS5611 — I2C
 
     // Update KF with measurement (real or simulated — altitude_m is already set correctly)
     mtx_kf.exec([&]() {
@@ -1085,7 +1087,7 @@ void UserThreads() {
     hal::rtos::scheduler.create(CB_SDLogger, {.name = "CB_SDLogger", .stack_size = 4096, .priority = osPriorityNormal});
   }
 
-  if (RA_EEPROM_READ_ENABLED)
+  if (RA_EEPROM_ENABLED)
     hal::rtos::scheduler.create(CB_EEPROMWrite, {.name = "CB_EEPROMWrite", .stack_size = 2048, .priority = osPriorityLow});
 
   hal::rtos::scheduler.create(CB_Transmit, {.name = "CB_Transmit", .stack_size = 2048, .priority = osPriorityNormal});
@@ -1103,7 +1105,7 @@ void setup() {
   /* BEGIN GPIO AND INTERFACES SETUP */
   UserSetupSD();
   UserSetupGPIO();
-  UserSetupLowPower(); // beware servoserial
+  UserSetupLowPower();  // beware servoserial
   UserSetupActuator();
   UserSetupCDC();
   UserSetupUSART();
@@ -1150,11 +1152,11 @@ void setup() {
   Serial.println(printable_sensor_status(sensors_health.imu[0]));
 
   // Restore last flight state from EEPROM (only if data was previously defined)
-  if constexpr (RA_EEPROM_READ_ENABLED) {
+  if constexpr (RA_EEPROM_ENABLED) {
     // Zero altitude reference
     EEPROM_Read();
     delay(4000);
-    ReadAltimeter();
+    ReadAltimeter(0);
     alt_ref = data.altimeter[0].altitude_m;
     servo_a.write(pos_a);  // re-sync servo hardware to restored position
     servo_b.write(pos_b);
@@ -1162,15 +1164,15 @@ void setup() {
   } else {
     // Zero altitude reference
     delay(4000);
-    ReadAltimeter();
+    ReadAltimeter(0);
     alt_ref = data.altimeter[0].altitude_m;
   }
 
   bno_cal.init(static_cast<float>(BNO_MOUNT_OFFSET));
   bno_cal.autoNorthLock(bno);
 
-  led.setPixelColor(0, led.Color(0, 0, 255));
-  led.setPixelColor(1, led.Color(0, 0, 255));
+  led.setPixelColor(0, led.Color(0, 255, 0));
+  led.setPixelColor(1, led.Color(0, 255, 0));
   led.show();
 
   /* BEGIN SYSTEM/KERNEL SETUP */
@@ -1253,7 +1255,7 @@ void EvalFSM() {
 
       if (apogee_alt_dirty) {
         apogee_alt_dirty = false;
-        sampler.set_threshold(RA_APOGEE_ALT, /*recount*/ false);
+        sampler.set_threshold(RA_APOGEE_VEL, /*recount*/ false);
       }
 
       const double vel = filter_alt.kf.state_vector()[1];
@@ -1344,9 +1346,9 @@ void EvalFSM() {
         hal::rtos::delay_ms(60ul * 1000ul);  // let cameras record for 1 minute after landing
         digitalWrite(USER_GPIO_CAM1, LOW);
         digitalWrite(USER_GPIO_CAM2, LOW);
-      }
-      if constexpr (RA_LED_ENABLED) {
-        digitalWrite(USER_GPIO_BUZZER, 1);
+        if constexpr (RA_LED_ENABLED) {
+          digitalWrite(USER_GPIO_BUZZER, 1);
+        }
       }
       break;
     }
@@ -1372,25 +1374,22 @@ void ReadIMU() {
   }
 }
 
-void ReadAltimeter() {
-  for (size_t i = 0; i < RA_NUM_ALTIMETER; ++i) {
-    if (sensors_health.altimeter[i] != SensorStatus::SENSOR_OK ||
-        !altimeter[i]->read())
-      continue;
+void ReadAltimeter(size_t i) {
+  if (sensors_health.altimeter[i] != SensorStatus::SENSOR_OK || !altimeter[i]->read())
+    return;
 
-    if (simActivated && simEnabled) {
-      double sim_alt_msl             = altitude_msl_from_pressure(simPressure / 100.F);
-      data.altimeter[i].altitude_m   = sim_alt_msl;
-      data.altimeter[i].pressure_hpa = simPressure / 100.F;
-      alt_agl                        = sim_alt_msl;
-    } else {
-      data.altimeter[i].pressure_hpa = altimeter[i]->pressure_hpa();
-      data.altimeter[i].altitude_m   = altimeter[i]->altitude_m();
-    }
-
-    data.altimeter[i].temperature = altimeter[i]->temperature();
-    data.alt_fresh                = true;
+  if (simActivated && simEnabled) {
+    double sim_alt_msl             = altitude_msl_from_pressure(simPressure / 100.F);
+    data.altimeter[i].altitude_m   = sim_alt_msl;
+    data.altimeter[i].pressure_hpa = simPressure / 100.F;
+    alt_agl                        = sim_alt_msl;
+  } else {
+    data.altimeter[i].pressure_hpa = altimeter[i]->pressure_hpa();
+    data.altimeter[i].altitude_m   = altimeter[i]->altitude_m();
   }
+
+  data.altimeter[i].temperature = altimeter[i]->temperature();
+  data.alt_fresh                = true;
 }
 
 void ReadGNSS() {
@@ -1403,12 +1402,12 @@ void ReadGNSS() {
       data.hh              = m10s.getHour(UBLOX_CUSTOM_MAX_WAIT);
       data.mm              = m10s.getMinute(UBLOX_CUSTOM_MAX_WAIT);
       data.ss              = m10s.getSecond(UBLOX_CUSTOM_MAX_WAIT);
-      data.timestamp_epoch = m10s.getUnixEpoch(data.timestamp_us);
-      data.latitude        = static_cast<double>(m10s.getLatitude()) * 1.e-7;
-      data.longitude       = static_cast<double>(m10s.getLongitude()) * 1.e-7;
-      data.altitude_msl    = static_cast<float>(m10s.getAltitudeMSL()) * 1.e-3f;
-      data.velocity_n      = static_cast<double>(m10s.getNedNorthVel()) * 1.e-3;
-      data.velocity_e      = static_cast<double>(m10s.getNedEastVel()) * 1.e-3;
+      data.timestamp_epoch = m10s.getUnixEpoch(data.timestamp_us, UBLOX_CUSTOM_MAX_WAIT);
+      data.latitude        = static_cast<double>(m10s.getLatitude(UBLOX_CUSTOM_MAX_WAIT)) * 1.e-7;
+      data.longitude       = static_cast<double>(m10s.getLongitude(UBLOX_CUSTOM_MAX_WAIT)) * 1.e-7;
+      data.altitude_msl    = static_cast<float>(m10s.getAltitudeMSL(UBLOX_CUSTOM_MAX_WAIT)) * 1.e-3f;
+      data.velocity_n      = static_cast<double>(m10s.getNedNorthVel(UBLOX_CUSTOM_MAX_WAIT)) * 1.e-3;
+      data.velocity_e      = static_cast<double>(m10s.getNedEastVel(UBLOX_CUSTOM_MAX_WAIT)) * 1.e-3;
       data.heading_gps     = m10s.getHeading(UBLOX_CUSTOM_MAX_WAIT) * 1.e-5;
 
       snprintf(data.utc, sizeof(data.utc), "%02d:%02d:%02d",
@@ -1647,7 +1646,7 @@ void HandleCommand(const String &rx) {
     /* ========== CAL ========== */
   } else if (strcmp(p2, "CAL") == 0) {
     if (!p3) {
-      ReadAltimeter();
+      ReadAltimeter(0);
       alt_ref = data.altimeter[0].altitude_m;
     } else if (strcmp(p3, "TOF") == 0) {
       // VL53L1X offset calibration at given distance
@@ -1907,6 +1906,9 @@ void HandleCommand(const String &rx) {
 
     /* ========== SLEEP ========== */
   } else if (strcmp(p2, "SLEEP") == 0) {
+    if (pvalid.sd) {
+      mtx_sdio.exec([&]() { fs_sd.close_one(); });
+    }
     led.setPixelColor(0, led.Color(0, 0, 255));
     led.setPixelColor(1, led.Color(0, 0, 255));
     led.show();

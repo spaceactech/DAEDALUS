@@ -5,7 +5,7 @@
 
 extern void ReadIMU();
 
-extern void ReadAltimeter();
+extern void ReadAltimeter(size_t i);
 
 extern void ReadGNSS();
 

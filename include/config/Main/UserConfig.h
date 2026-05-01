@@ -14,7 +14,7 @@ constexpr const char *RA_FILE_EXT = "CSV";
 constexpr size_t RA_NUM_IMU = 1;
 
 // Number of Altimeter sensors
-constexpr size_t RA_NUM_ALTIMETER = 1;
+constexpr size_t RA_NUM_ALTIMETER = 2;
 
 // Number of GNSS sensors
 constexpr size_t RA_NUM_GNSS = 0;
@@ -42,11 +42,11 @@ constexpr double SPOOL_PHYSICAL_OFFSET = 45.0;  // For CanSat
 // Retain Deployment
 constexpr bool RA_RETAIN_DEPLOYMENT_ENABLED = true;
 
-// EEPROM Restore on Boot
-// When true, EEPROM_Read() in setup() restores the last saved state if the
-// magic number and CRC are valid (i.e. data was previously defined / written).
-// Set false to always start with a clean slate.
-constexpr bool RA_EEPROM_READ_ENABLED = false;
+// EEPROM feature flag — controls both restore-on-boot and periodic writes.
+// When true, EEPROM_Read() restores the last saved state (if magic + CRC valid)
+// and CB_EEPROMWrite runs every RA_EEPROM_WRITE_INTERVAL ms.
+// Set false to disable all EEPROM activity and always start clean.
+constexpr bool RA_EEPROM_ENABLED = false;
 
 // EEPROM write interval (ms)
 constexpr uint32_t RA_EEPROM_WRITE_INTERVAL = 10000ul;  // 10 s

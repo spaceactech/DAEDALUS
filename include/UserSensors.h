@@ -7,6 +7,7 @@
 #include <ISM6HG256XSensor.h>
 #include <SparkFun_BMP581_Arduino_Library.h>
 #include <SparkFun_u-blox_GNSS_v3.h>
+#include <MS5611.h>
 
 constexpr double G = 9.80665;
 
@@ -47,7 +48,7 @@ public:
     gy = gyro.y;
     gz = gyro.z;
 
-    return true; 
+    return true;
   }
 
   double acc_x() override { return ax * G / 1000; }
@@ -96,6 +97,35 @@ public:
 
   double temperature() override {
     return data.temperature;
+  }
+};
+
+class Altimeter_MS5611 final : public SensorAltimeter {
+  MS5611   ms5611;
+  TwoWire &wire;
+  uint8_t  osr_bits = OSR_STANDARD;  // MS5611_OSR_256(8) … MS5611_OSR_4096(12); default = MS5611_OSR_1024
+
+public:
+  Altimeter_MS5611(uint8_t address, TwoWire &wire, uint8_t osr_bits = OSR_STANDARD)
+      : SensorAltimeter(), ms5611(address), wire(wire), osr_bits(osr_bits) {}
+
+  bool begin() override {
+    if (!ms5611.begin()) return false;
+    ms5611.reset();  // reload PROM calibration coefficients; required before first read
+    ms5611.setOversampling(OSR_STANDARD);
+    return true;
+  }
+
+  bool read() override {
+    return ms5611.read(osr_bits) == MS5611_READ_OK;
+  }
+
+  double pressure_hpa() override {
+    return ms5611.getPressure();  // already in mbar (= hPa)
+  }
+
+  double temperature() override {
+    return ms5611.getTemperature();
   }
 };
 
