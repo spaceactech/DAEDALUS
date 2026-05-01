@@ -76,9 +76,6 @@ double   alt_ref;  // Altitude at ground
 double   alt_agl;  // Altitude above ground
 double   apogee_raw;
 uint32_t packet_count{};
-double   main_alt_threshold = RA_MAIN_ALT_COMPENSATED;  // Runtime-adjustable via SET,MAIN_ALT command
-uint32_t tx_interval_ms     = 1000;                     // Runtime-adjustable via SET,TX_RATE command
-bool     use_kf_gps         = false;                    // true=KF-smoothed GPS, false=raw GPS for guidance
 /* END PERSISTENT STATE */
 
 /* BEGIN DATA MEMORY */
@@ -297,6 +294,11 @@ void UserSetupGPIO() {
   digitalWrite(M10S_RESET, 0);
   delay(100);
   digitalWrite(M10S_RESET, 1);
+}
+
+void UserSetupLowPower() {
+  LowPower.begin();
+  LowPower.enableWakeupFrom(&Xbee, []() {});
 }
 
 void UserSetupActuator() {
@@ -591,7 +593,7 @@ void CB_ReadGNSS(void *) {
       });
     }
 
-    // Snapshot filtered GPS state. KF always runs; guidance uses KF or raw depending on use_kf_gps flag.
+    // Snapshot filtered GPS state. KF always runs; guidance uses KF or raw depending on RA_USE_KF_GPS flag.
     double kf_lat, kf_lon, kf_vn, kf_ve;
     mtx_kf.exec([&]() {
       kf_lat = filter_nav_n.kf.state_vector()[0];
@@ -600,7 +602,7 @@ void CB_ReadGNSS(void *) {
       kf_ve  = filter_nav_e.kf.state_vector()[1];
     });
     if (gps_fixed) {
-      if (use_kf_gps) {
+      if (RA_USE_KF_GPS) {
         data.latitude    = kf_lat;
         data.longitude   = kf_lon;
         data.velocity_n  = kf_vn;
@@ -611,7 +613,7 @@ void CB_ReadGNSS(void *) {
       }
     }
     mtx_nav.exec([&]() {
-      if (use_kf_gps) {
+      if (RA_USE_KF_GPS) {
         nav_state.location = {kf_lat, kf_lon};
         nav_state.vn       = kf_vn;
         nav_state.ve       = kf_ve;
@@ -751,24 +753,34 @@ void CB_ConstructData(void *) {
 }
 
 void CB_SDLogger(void *) {
-  hal::rtos::interval_loop(1000ul, [&]() -> void {
+  hal::rtos::interval_loop(LoggerInterval(), [&]() -> TickType_t { return LoggerInterval(); }, [&]() -> void {
 #ifdef RA_STACK_HWM_ENABLED
     stack_hwm.sdlog = uxTaskGetStackHighWaterMark(NULL);
 #endif
     static String snap;
     mtx_buf.exec([&]() {
-      snap = sd_buf;  // reuses snap's buffer if cap >= sd_buf.length()
+      snap = std::move(sd_buf);  // drain all accumulated rows atomically
+      sd_buf.reserve(512);       // restore capacity so next += doesn't alloc from scratch
     });
     if (snap.length() == 0) return;
+
+    bool ok = false;
     mtx_sdio.exec([&]() {
-      fs_sd.file() << snap;
-      fs_sd.file().flush();
+      const size_t written = fs_sd.file().write(snap.c_str(), snap.length());
+      ok = (written == snap.length());
+      if (ok) fs_sd.file().flush();
     });
-  });
+
+    if (!ok) {  // re-initialize SD on write failure
+      mtx_sdio.exec([&]() {
+        fs_sd.close_one();
+        UserSetupSD();
+      });
+    } });
 }
 
 void CB_Transmit(void *) {
-  hal::rtos::interval_loop(tx_interval_ms, [&]() -> TickType_t { return tx_interval_ms; }, [&]() -> void {
+  hal::rtos::interval_loop(RA_TX_INTERVAL_MS, [&]() -> TickType_t { return RA_TX_INTERVAL_MS; }, [&]() -> void {
 #ifdef RA_STACK_HWM_ENABLED
       stack_hwm.transmit = uxTaskGetStackHighWaterMark(NULL);
 #endif
@@ -803,9 +815,20 @@ void CB_Control(void *) {
 
 
     // In real flight only run the spool servos during paraglider descent.
-    // if (fsm.state() != UserState::PAYLOAD_REALEASE) return;
+    if (fsm.state() != UserState::PAYLOAD_REALEASE) return;
 
-    servo_target_angles = controller.guidance.update(snap.location, target_location, alt_agl, snap.vn, snap.ve, snap.yaw + SPOOL_PHYSICAL_OFFSET, snap.heading);
+    // Smooth yaw through sin/cos EMA to handle 0/360 wrap.  Raw body yaw had
+    // 103 deg std in flight, injecting noise into theta_offset at 20 Hz and
+    // causing constant sector crossings.  alpha=0.15 -> ~300 ms time constant.
+    static double    yaw_sin = 0.0, yaw_cos = 1.0;
+    constexpr double YAW_EMA_ALPHA = 0.15;
+    double           yr            = (snap.yaw + SPOOL_PHYSICAL_OFFSET) * DEG_TO_RAD;
+    yaw_sin                        = Guidance::ema_filter(std::sin(yr), yaw_sin, YAW_EMA_ALPHA);
+    yaw_cos                        = Guidance::ema_filter(std::cos(yr), yaw_cos, YAW_EMA_ALPHA);
+    double filtered_yaw            = std::atan2(yaw_sin, yaw_cos) * RAD_TO_DEG;
+    if (filtered_yaw < 0.0) filtered_yaw += 360.0;
+
+    servo_target_angles = controller.guidance.update(snap.location, target_location, alt_agl, snap.vn, snap.ve, filtered_yaw, snap.heading);
     controller.servo_pid_update(servo_target_angles);
   });
 }
@@ -1059,7 +1082,7 @@ void UserThreads() {
   hal::rtos::scheduler.create(CB_ConstructData, {.name = "CB_ConstructData", .stack_size = 2048, .priority = osPriorityNormal});
 
   if (pvalid.sd) {
-    hal::rtos::scheduler.create(CB_SDLogger, {.name = "CB_SDLogger", .stack_size = 2048, .priority = osPriorityNormal});
+    hal::rtos::scheduler.create(CB_SDLogger, {.name = "CB_SDLogger", .stack_size = 4096, .priority = osPriorityNormal});
   }
 
   if (RA_EEPROM_READ_ENABLED)
@@ -1078,7 +1101,9 @@ void setup() {
   sd_buf.reserve(4096);
 
   /* BEGIN GPIO AND INTERFACES SETUP */
+  UserSetupSD();
   UserSetupGPIO();
+  UserSetupLowPower(); // beware servoserial
   UserSetupActuator();
   UserSetupCDC();
   UserSetupUSART();
@@ -1148,11 +1173,6 @@ void setup() {
   led.setPixelColor(1, led.Color(0, 0, 255));
   led.show();
 
-  // UserSetupSD();
-
-  // LowPower.begin();
-  // LowPower.enableWakeupFrom(&Xbee, []() {});  // UART wakes MCU; CB_ReceiveCommand RTOS task resumes normally
-
   /* BEGIN SYSTEM/KERNEL SETUP */
   hal::rtos::scheduler.initialize();
   UserThreads();
@@ -1205,8 +1225,9 @@ void EvalFSM() {
       }
 
       // sampler.add_sample(acc);                    // Use raw acceleration, unfiltered
-      sampler.add_sample(filter_acc.kf.state());  // Use filtered acceleration
-      sampler_sec.add_sample(alt_agl);            // Use filtered alt
+      // sampler.add_sample(filter_acc.kf.state());  // Use filtered acceleration
+      sampler.add_sample(0);            // Closed
+      sampler_sec.add_sample(alt_agl);  // Use filtered alt
 
 
       if ((sampler.is_sampled() &&
@@ -1254,7 +1275,7 @@ void EvalFSM() {
 
     case UserState::APOGEE: {
       // <--- Next: always transfer --->
-      // main_alt_threshold = apogee_raw * 0.8;
+      // RA_MAIN_ALT_COMPENSATED = apogee_raw * 0.8;
       hal::rtos::delay_ms(1500);
       fsm.transfer(UserState::DESCENT);
       break;
@@ -1272,7 +1293,7 @@ void EvalFSM() {
       if (fsm.on_enter()) {  // Run once
         sampler.reset();
         sampler.set_capacity(RA_MAIN_SAMPLES, /*recount*/ false);
-        sampler.set_threshold(main_alt_threshold, /*recount*/ false);
+        sampler.set_threshold(RA_MAIN_ALT_COMPENSATED, /*recount*/ false);
         state_millis_start = millis();
       }
 
@@ -1286,15 +1307,11 @@ void EvalFSM() {
         const bool cond_timeout  = state_millis_elapsed >= RA_TIME_TO_MAIN_MAX;
         const bool cond_min_time = state_millis_elapsed >= RA_TIME_TO_MAIN_MIN;
         if (cond_timeout || (cond_min_time && cond_alt_lower)) {
-          servo_a.write(pos_a + 15);
-          hal::rtos::delay_ms(100);
           ActivateDeployment(0);
           fsm.transfer(UserState::PAYLOAD_REALEASE);
         }
       } else {
         if (cond_alt_lower) {
-          servo_a.write(pos_a + 15);
-          hal::rtos::delay_ms(100);
           ActivateDeployment(0);
           fsm.transfer(UserState::PAYLOAD_REALEASE);
         }
@@ -1601,9 +1618,9 @@ void HandleCommand(const String &rx) {
       return;
     }
     if (strcmp(p3, "ON") == 0) {
-      use_kf_gps = true;
+      RA_USE_KF_GPS = true;
     } else if (strcmp(p3, "OFF") == 0) {
-      use_kf_gps = false;
+      RA_USE_KF_GPS = false;
     } else {
       ++last_nack;
       return;
@@ -1714,7 +1731,7 @@ void HandleCommand(const String &rx) {
         ++last_nack;
         return;
       }
-      main_alt_threshold = raw;
+      RA_MAIN_ALT_COMPENSATED = raw;
     } else if (strcmp(p3, "APOGEE_ALT") == 0) {
       char        *end;
       const double val = strtod(p4, &end);
@@ -1732,7 +1749,7 @@ void HandleCommand(const String &rx) {
         return;
       }
       if (hz >= 1 && hz <= 10)
-        tx_interval_ms = 1000u / static_cast<uint32_t>(hz);
+        RA_TX_INTERVAL_MS = 1000u / static_cast<uint32_t>(hz);
     } else if (strcmp(p3, "INS_TOF") == 0) {
       char        *end;
       const double val = strtod(p4, &end);
@@ -1773,8 +1790,6 @@ void HandleCommand(const String &rx) {
     }
     if (strcmp(p3, "PL") == 0) {
       if (strcmp(p4, "ON") == 0) {
-        servo_a.write(pos_a + 15);
-        hal::rtos::delay_ms(100);
         pos_a = RA_SERVO_A_RELEASE;
         servo_a.write(pos_a);
       } else if (strcmp(p4, "OFF") == 0) {
@@ -1896,12 +1911,13 @@ void HandleCommand(const String &rx) {
     led.setPixelColor(1, led.Color(0, 0, 255));
     led.show();
     LowPower.deepSleep();
-    /* ========== RESTART ========== */
-  } else if (strcmp(p2, "RESTART") == 0) {
-    // Wakeup trigger sent over Xbee — FreeRTOS resumes after deepSleep() returns
+    __NVIC_SystemReset();
 
     /* ========== RESET ========== */
   } else if (strcmp(p2, "RESET") == 0) {
+    if (pvalid.sd) {
+      mtx_sdio.exec([&]() { fs_sd.close_one(); });
+    }
     delay(100);
     __NVIC_SystemReset();
 
@@ -2045,7 +2061,7 @@ void ConstructString() {
     << data.tof
     << data.deploy
     << RA_APOGEE_ALT
-    << main_alt_threshold
+    << RA_MAIN_ALT_COMPENSATED
     << RA_LAUNCH_ALT
     << RA_INS_CRIT_THRESHOLD
     << servo_target_angles[0]      // SERVO_1_TARGET (deg)
@@ -2058,10 +2074,10 @@ void ConstructString() {
   // << (uint8_t) ((snap_imu << 0) | (snap_alt << 1) | (snap_bno << 2) | (snap_gps << 3) | (snap_ina << 4) | (snap_tof << 5));
 
   // Atomic update — lock held only for buffer mutation, not string building.
-  // sd_buf accumulates rows; CB_SDLogger drains it by copy-and-clear.
+  // sd_buf accumulates rows; CB_SDLogger drains it via std::move (drain-and-clear).
   // tx_buf keeps only the latest frame (telemetry doesn't need history).
   mtx_buf.exec([&]() {
-    sd_buf = std::move(local_sd);
+    sd_buf += local_sd;
     tx_buf = std::move(local_tx);
   });
 }

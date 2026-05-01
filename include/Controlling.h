@@ -24,8 +24,8 @@ constexpr double MAX_SERVO_SPEED = 800.0;
 constexpr double SPOOL_RADIUS = 0.0109;
 
 // rope pull limit ΔL=L±L2−2sL2−s2​sinα​
-// constexpr double dL_max       = 0.298758; //30 degree
-constexpr double dL_max       = 0.34714423; //35 degree
+constexpr double dL_max       = 0.298758; //30 degree
+// constexpr double dL_max       = 0.34714423; //35 degree
 //  constexpr double dL_max       = 0.39; //40 degree
 
 constexpr double ENC_TO_DEG = 360.0 / 4096.0;  // **Change
@@ -38,8 +38,17 @@ constexpr double KD = 0.15;
 // Bearing EMA alpha — controls force-vector smoothing (sector selection uses raw bearing)
 constexpr double at = 0.2;
 
+// Control-vector EMA alpha — smooths u[i] across sector-boundary discontinuities (lower = smoother).
+// At 20 Hz: alpha=0.3 -> ~140 ms tau (too fast), alpha=0.15 -> ~300 ms tau (paraglider appropriate).
+constexpr double at_ctrl = 0.15;
+
 // Drift correction gain — how aggressively to steer against GPS drift (0=none, 1=full reflection)
-constexpr double DRIFT_CORRECTION_GAIN = 1;
+constexpr double DRIFT_CORRECTION_GAIN = 1.0;
+
+// Slew rate limit on servo target angles — caps how fast the commanded target can change per 10 ms PID step.
+// 400 deg/s × 0.010 s = 4 deg/step; full range (~1570 deg) takes ~4 s to traverse.
+// Prevents guidance jumps (800–1500 deg/update) from driving the PID into limit cycling.
+constexpr double MAX_SLEW_DEG_PER_STEP = 400.0 * 0.010;
 
 // ---------------- STRUCTS ----------------
 
@@ -313,7 +322,9 @@ struct Guidance {
 
   // ---- Main guidance update ----
 
-  double last_bearing = 0.0;
+  double last_bearing     = 0.0;
+  double last_control[3]  = {};
+  double drift_ema        = 0.0;  // smoothed wind-drift angle estimate (deg)
 
   numeric_vector<3> update(
     const GPSCoordinate &current,
@@ -334,15 +345,18 @@ struct Guidance {
     // body-fixed so we need body orientation, not GPS drift direction.
     double abs_bearing = calculate_bearing(current, target, 0.0);
 
-    // Drift correction: when moving, the GPS heading tells us where we are
-    // actually going.  Steer against the drift so the net trajectory points
-    // at the target.  Example: drifting East (90°), target is North (0°) →
-    // steer NW (315°) to cancel the eastward carry.
-    // corrected = abs_bearing − 0.5 × (gps_heading − abs_bearing)
+    // Wind crab-angle compensation: maintain an EMA of the observed drift
+    // (GPS track vs. target bearing).  This converges to the steady-state wind
+    // drift angle (~1 s time constant at 20 Hz) and holds it as a feed-forward
+    // crab offset.  Using instantaneous drift_error caused the algorithm to
+    // react to GPS heading noise every cycle; the EMA makes it a stable offset.
+    // Flight data showed a consistent -12.8° alignment error (velocity 12.8° west
+    // of bearing) — exactly this wind-induced crab deficit.
     double corrected_bearing = abs_bearing;
     if (velocity >= 1.0) {
       double drift_error = std::fmod(gps_heading - abs_bearing + 540.0, 360.0) - 180.0;
-      corrected_bearing  = std::fmod(abs_bearing - drift_error * DRIFT_CORRECTION_GAIN + 360.0, 360.0);
+      drift_ema          = ema_filter(drift_error, drift_ema, 0.05);
+      corrected_bearing  = std::fmod(abs_bearing - drift_ema * DRIFT_CORRECTION_GAIN + 360.0, 360.0);
     }
 
     // Convert global bearing to body frame using magnetometer
@@ -364,7 +378,16 @@ struct Guidance {
     auto target_vec = compute_target_vector(distance, bear_smooth);
     auto control    = compute_control_vector(target_vec, bearing_raw);
 
-    return control_to_servo_angle(control);
+    // EMA on control vector: softens step discontinuities at 120°/240° sector boundaries.
+    // Without this, a bearing crossing a boundary flips which u[i] is active,
+    // causing all three target angles to step simultaneously.
+    for (int i = 0; i < 3; i++)
+      last_control[i] = ema_filter(control[i], last_control[i], at_ctrl);
+
+    numeric_vector<3> control_smoothed{};
+    for (int i = 0; i < 3; i++) control_smoothed[i] = last_control[i];
+
+    return control_to_servo_angle(control_smoothed);
   }
 };
 
@@ -388,9 +411,10 @@ struct Controller {
   int16_t     last_speeds[3] = {};
 
   // Per-servo direction sign; flips automatically when wrong-way travel is detected
-  int8_t  dirs[3]        = {1, 1, 1};
-  double  prev_angles[3] = {};
-  double  wrong_accum[3] = {};
+  int8_t  dirs[3]           = {1, 1, 1};
+  double  prev_angles[3]    = {};
+  double  wrong_accum[3]    = {};
+  double  slewed_targets[3] = {};
 
   static constexpr double SWAP_THRESHOLD_DEG = 100.0;
 
@@ -424,9 +448,18 @@ struct Controller {
     static xcore::NbDelay delay(10, millis);
 
     delay([&]() {
+      // Slew rate limit: advance slewed_targets toward target_angles by at most
+      // MAX_SLEW_DEG_PER_STEP per tick.  Decouples the PID from abrupt guidance
+      // jumps (sector switches, GPS steps) so the servo can actually track.
+      for (size_t i = 0; i < 3; ++i) {
+        double step       = target_angles[i] - slewed_targets[i];
+        slewed_targets[i] += std::max(-MAX_SLEW_DEG_PER_STEP,
+                                       std::min( MAX_SLEW_DEG_PER_STEP, step));
+      }
+
       for (size_t i = 0; i < 3; ++i) {
         last_angles[i]  = driver.read_angle(i);
-        double err      = target_angles[i] - last_angles[i];
+        double err      = slewed_targets[i] - last_angles[i];
         double motion   = last_angles[i] - prev_angles[i];
         int16_t speed   = 0;
 
@@ -445,7 +478,7 @@ struct Controller {
           }
 
           speed = static_cast<int16_t>(
-            compute_speed(pid_controllers[i], target_angles[i], last_angles[i]) * dirs[i]);
+            compute_speed(pid_controllers[i], slewed_targets[i], last_angles[i]) * dirs[i]);
         } else {
           wrong_accum[i] = 0;  // clear stale accumulation while in deadband
         }

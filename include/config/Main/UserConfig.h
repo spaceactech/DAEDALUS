@@ -68,13 +68,13 @@ constexpr uint32_t RA_INTERVAL_ALTIMETER_READING = 50ul;  // ms
 // GNSS Reading
 constexpr uint32_t RA_INTERVAL_GNSS_READING = 100ul;  // ms
 
-// GNSS Reading
+// MAG Reading
 constexpr uint32_t RA_INTERVAL_MAG_READING = 50ul;  // ms
 
-// GNSS Reading
+// TOF Reading
 constexpr uint32_t RA_INTERVAL_TOF_READING = 100ul;  // ms
 
-// GNSS Reading
+// INA Reading
 constexpr uint32_t RA_INTERVAL_INA_READING = 200ul;  // ms
 
 // FSM Evaluation
@@ -86,7 +86,7 @@ constexpr uint32_t RA_JITTER_TOLERANCE_FSM_EVAL = 1ul;  // ms
 // Data Construct
 constexpr uint32_t RA_INTERVAL_CONSTRUCT = 100ul;  // ms
 
-// Data Construct
+// Control Loop
 constexpr uint32_t RA_INTERVAL_Controlling = 50ul;  // ms 20Hz
 
 // Altitude Auto-Zero
@@ -104,8 +104,8 @@ constexpr int RA_SERVO_MIN = 500;                                // us PWM
 constexpr int RA_SERVO_MAX = 2450;                               // us PWM
 constexpr int RA_SERVO_CEN = (RA_SERVO_MIN + RA_SERVO_MAX) / 2;  // us PWM
 
-constexpr float RA_SERVO_A_RELEASE = 35;   // deg
-constexpr float RA_SERVO_A_LOCK    = 65;  // deg
+constexpr float RA_SERVO_A_RELEASE = 135;   // deg
+constexpr float RA_SERVO_A_LOCK    = 90;  // deg
 
 constexpr float RA_SERVO_B_RELEASE = 180;  // deg
 constexpr float RA_SERVO_B_LOCK    = 25;   // deg
@@ -154,7 +154,7 @@ constexpr double RA_INS_ALT_RAW  = 2.0;                  // m
 
 // INS deployment baro thresholds (runtime-adjustable via SET,INS_TOF / SET,INS_NEAR / SET,INS_CRIT)
 inline double RA_INS_TOF_THRESHOLD  = RA_INS_ALT_RAW;  // m — TOF trigger
-inline double RA_INS_NEAR_THRESHOLD = 15.0;             // m — baro near-ground trigger
+inline double RA_INS_NEAR_THRESHOLD = 1.5;             // m — baro near-ground trigger
 inline double RA_INS_CRIT_THRESHOLD = 2.0;              // m — baro critical trigger
 
 // Safeguard overspeed threshold to main deployment
@@ -176,7 +176,7 @@ constexpr double RA_INS_COMPENSATION_MULT  = 2.0;
 constexpr double RA_INS_ALT_COMPENSATED = RA_INS_ALT_RAW + RA_INS_COMPENSATION_MULT * RA_MAIN_VEL * (static_cast<double>(RA_MAIN_TON) / 1000.);  // m
 
 // Main deployment altitude default (APOGEE state auto-overrides with apogee_raw * 0.8)
-inline double RA_MAIN_ALT_COMPENSATED = 500;  // m — fallback only
+inline double RA_MAIN_ALT_COMPENSATED = 500;  // m — runtime-adjustable via SET,MAIN_ALT
 
 // Main Deployment Event Altitude: altitude threshold (LT)
 constexpr double RA_MAIN_ALT_RAW = 760.0;  // m
@@ -209,6 +209,14 @@ constexpr uint32_t RA_AUTOZERO_SAMPLES = RA_AUTOZERO_TON / RA_INTERVAL_AUTOZERO;
 constexpr uint32_t RA_SDLOGGER_INTERVAL_IDLE = 1000ul;  // 1 Hz
 constexpr uint32_t RA_SDLOGGER_INTERVAL_SLOW = 200ul;   // 5 Hz
 constexpr uint32_t RA_SDLOGGER_INTERVAL_FAST = 100ul;   // 10 Hz
+
+/* TELEMETRY */
+
+inline uint32_t RA_TX_INTERVAL_MS = 1000ul;  // ms — runtime-adjustable via SET,TX_RATE
+
+/* GPS / NAVIGATION */
+
+inline bool RA_USE_KF_GPS = false;  // true=KF-smoothed GPS, false=raw GPS for guidance NEED TO TUNE MUCH ON KF IF USE
 
 // Static assertions validate settings
 namespace details::assertions {
