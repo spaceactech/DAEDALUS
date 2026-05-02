@@ -87,7 +87,6 @@ extern void AutoZeroAlt();
 
 extern void HandleCommand(const String &rx);
 
-extern void ConstructSD(String &out);
-extern void ConstructTX(String &out);
+extern void ConstructString();
 
 #endif  //ROCKET_AVIONICS_TEMPLATE_MAIN_H
