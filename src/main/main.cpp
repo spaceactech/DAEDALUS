@@ -179,6 +179,8 @@ uint32_t LoggerInterval() {
 
     case UserState::ASCENT:
     case UserState::APOGEE:
+      return RA_SDLOGGER_INTERVAL_REALTIME;
+
     case UserState::DESCENT:
     case UserState::PROBE_REALEASE:
     case UserState::PAYLOAD_REALEASE:
@@ -755,30 +757,19 @@ void CB_ConstructData(void *) {
 }
 
 void CB_SDLogger(void *) {
-  hal::rtos::interval_loop(LoggerInterval(), [&]() -> TickType_t { return LoggerInterval(); }, [&]() -> void {
-#ifdef RA_STACK_HWM_ENABLED
-    stack_hwm.sdlog = uxTaskGetStackHighWaterMark(NULL);
-#endif
-    static String snap;
-    mtx_buf.exec([&]() {
-      snap = std::move(sd_buf);  // drain all accumulated rows atomically
-      sd_buf.reserve(512);       // restore capacity so next += doesn't alloc from scratch
-    });
-    if (snap.length() == 0) return;
+  hal::rtos::interval_loop(500ul, LoggerInterval, [&]() -> void {
+    if (!pvalid.sd) return;
 
-    bool ok = false;
-    mtx_sdio.exec([&]() {
-      const size_t written = fs_sd.file().write(snap.c_str(), snap.length());
-      ok = (written == snap.length());
-      if (ok) fs_sd.file().flush();
+    String snap;
+    mtx_buf.exec([&]() -> void {
+      snap = sd_buf;
     });
 
-    if (!ok) {  // re-initialize SD on write failure
-      mtx_sdio.exec([&]() {
-        fs_sd.close_one();
-        UserSetupSD();
-      });
-    } });
+    mtx_sdio.exec([&]() -> void {
+      fs_sd.file() << snap;
+      fs_sd.file().flush();
+    });
+  });
 }
 
 void CB_Transmit(void *) {
@@ -2075,11 +2066,8 @@ void ConstructString() {
   // FRESH bitmask: bit0=IMU bit1=ALT bit2=BNO bit3=GPS bit4=INA bit5=TOF
   // << (uint8_t) ((snap_imu << 0) | (snap_alt << 1) | (snap_bno << 2) | (snap_gps << 3) | (snap_ina << 4) | (snap_tof << 5));
 
-  // Atomic update — lock held only for buffer mutation, not string building.
-  // sd_buf accumulates rows; CB_SDLogger drains it via std::move (drain-and-clear).
-  // tx_buf keeps only the latest frame (telemetry doesn't need history).
   mtx_buf.exec([&]() {
-    sd_buf += local_sd;
+    sd_buf = std::move(local_sd);
     tx_buf = std::move(local_tx);
   });
 }

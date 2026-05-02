@@ -206,9 +206,10 @@ constexpr uint32_t RA_AUTOZERO_SAMPLES = RA_AUTOZERO_TON / RA_INTERVAL_AUTOZERO;
 
 /* SD CARD LOGGER INTERVALS */
 
-constexpr uint32_t RA_SDLOGGER_INTERVAL_IDLE = 1000ul;  // 1 Hz
-constexpr uint32_t RA_SDLOGGER_INTERVAL_SLOW = 200ul;   // 5 Hz
-constexpr uint32_t RA_SDLOGGER_INTERVAL_FAST = 100ul;   // 10 Hz
+constexpr uint32_t RA_SDLOGGER_INTERVAL_IDLE     = 2000ul;  // 0.5 Hz
+constexpr uint32_t RA_SDLOGGER_INTERVAL_SLOW     = 500ul;   // 2 Hz
+constexpr uint32_t RA_SDLOGGER_INTERVAL_FAST     = 200ul;   // 5 Hz
+constexpr uint32_t RA_SDLOGGER_INTERVAL_REALTIME = 100ul;   // 10 Hz
 
 /* TELEMETRY */
 

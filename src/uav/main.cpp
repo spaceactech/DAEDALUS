@@ -746,7 +746,7 @@ void CB_ConstructData(void *) {
 }
 
 void CB_SDLogger(void *) {
-  hal::rtos::interval_loop(1000ul, [&]() -> void {
+  hal::rtos::interval_loop(1000ul, LoggerInterval, [&]() -> void {
 #ifdef RA_STACK_HWM_ENABLED
     stack_hwm.sdlog = uxTaskGetStackHighWaterMark(NULL);
 #endif
