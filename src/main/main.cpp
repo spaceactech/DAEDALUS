@@ -81,6 +81,9 @@ uint32_t packet_count{};
 
 /* BEGIN DATA MEMORY */
 DataMemory data;
+
+String sd_buf;
+String tx_buf;
 /* END DATA MEMORY */
 
 /* Control*/
@@ -160,6 +163,7 @@ hal::rtos::mutex_t mtx_sdio;
 hal::rtos::mutex_t mtx_i2c;  // guards i2c4 bus (BNO, GPS, INA, TOF)
 hal::rtos::mutex_t mtx_cdc;
 hal::rtos::mutex_t mtx_uart;
+hal::rtos::mutex_t mtx_buf;  // guards tx_buf and sd_buf
 hal::rtos::mutex_t mtx_nav;  // guards nav_state — held for microseconds only
 hal::rtos::mutex_t mtx_kf;   // guards filter_acc, filter_alt, alt_agl, apogee_raw
 
@@ -518,8 +522,8 @@ void CB_ReadAltimeter(void *) {
 #ifdef RA_STACK_HWM_ENABLED
     stack_hwm.altimeter = uxTaskGetStackHighWaterMark(NULL);
 #endif
-    mtx_spi.exec([]() { ReadAltimeter(0); });  // BMP581 — SPI
-    mtx_i2c.exec([]() { ReadAltimeter(1); });  // MS5611 — I2C
+    mtx_spi.exec([]() { ReadAltimeter(0); });   // BMP581 — SPI
+    mtx_i2c.exec([]() { ReadAltimeter(1); });   // MS5611 — I2C
 
     // Update KF with measurement (real or simulated — altitude_m is already set correctly)
     mtx_kf.exec([&]() {
@@ -738,6 +742,19 @@ void CB_AutoZeroAlt(void *) {
   });
 }
 
+void CB_ConstructData(void *) {
+  uint8_t cpu_div = 0;
+  hal::rtos::interval_loop(RA_INTERVAL_CONSTRUCT, [&]() -> void {
+#ifdef RA_STACK_HWM_ENABLED
+    stack_hwm.construct = uxTaskGetStackHighWaterMark(NULL);
+#endif
+    if (++cpu_div >= 10) {
+      cpu_div       = 0;
+      data.cpu_temp = ReadCPUTemp();
+    }
+    ConstructString();
+  });
+}
 
 void CB_SDLogger(void *) {
   hal::rtos::interval_loop(500ul, LoggerInterval, [&]() -> void {
@@ -761,10 +778,9 @@ void CB_Transmit(void *) {
       stack_hwm.transmit = uxTaskGetStackHighWaterMark(NULL);
 #endif
       if (telemetry_enabled) {
-        String row;
-        row.reserve(512);
-        ConstructTX(row);
-        mtx_uart.exec([&]() { Xbee.println(row); });
+        String snap;
+        mtx_buf.exec([&]() { snap = tx_buf; });
+        mtx_uart.exec([&]() { Xbee.println(snap); });
         packet_count++;
       } });
 }
@@ -868,8 +884,7 @@ void CB_DebugLogger(void *) {
     stack_hwm.debug = uxTaskGetStackHighWaterMark(NULL);
 #endif
     String snap;
-    snap.reserve(512);
-    ConstructSD(snap);
+    mtx_buf.exec([&]() { snap = tx_buf; });
     mtx_cdc.exec([&]() -> void {
       Serial.println(snap);
 #ifdef RA_STACK_HWM_ENABLED
@@ -894,7 +909,7 @@ void CB_DebugLogger(void *) {
         { "INS",       stack_hwm.ins, 1024}, // 4096 B — commented out
         { "NEO",       stack_hwm.neo,  256}, // 1024 B
         {"CTRL",   stack_hwm.control, 1024}, // 4096 B — commented out
-        {  "SD",     stack_hwm.sdlog, 1024}, // 2048 B
+        {  "SD",     stack_hwm.sdlog,  512}, // 2048 B
         { "DBG",     stack_hwm.debug,  512}, // 2048 B
       };
       uint32_t total_used = 0, total_alloc = 0;
@@ -1038,49 +1053,53 @@ void CB_EEPROMWrite(void *) {
 /* END USER THREADS */
 
 void UserThreads() {
-  // hal::rtos::scheduler.create(CB_EvalFSM, {.name = "CB_EvalFSM", .stack_size = 2048, .priority = osPriorityRealtime});
-  // hal::rtos::scheduler.create(CB_Control, {.name = "CB_Control", .stack_size = 4096, .priority = osPriorityNormal});
-  // hal::rtos::scheduler.create(CB_INSDeploy, {.name = "CB_INSDeploy", .stack_size = 2048, .priority = osPriorityHigh});
+  hal::rtos::scheduler.create(CB_EvalFSM, {.name = "CB_EvalFSM", .stack_size = 2048, .priority = osPriorityRealtime});
+  hal::rtos::scheduler.create(CB_Control, {.name = "CB_Control", .stack_size = 4096, .priority = osPriorityNormal});
+  hal::rtos::scheduler.create(CB_INSDeploy, {.name = "CB_INSDeploy", .stack_size = 2048, .priority = osPriorityHigh});
 
-  // hal::rtos::scheduler.create(CB_ReadIMU, {.name = "CB_ReadIMU", .stack_size = 2048, .priority = osPriorityHigh});
-  // hal::rtos::scheduler.create(CB_ReadAltimeter, {.name = "CB_ReadAltimeter", .stack_size = 2048, .priority = osPriorityHigh});
+  hal::rtos::scheduler.create(CB_ReadIMU, {.name = "CB_ReadIMU", .stack_size = 2048, .priority = osPriorityHigh});
+  hal::rtos::scheduler.create(CB_ReadAltimeter, {.name = "CB_ReadAltimeter", .stack_size = 2048, .priority = osPriorityHigh});
 
-  // hal::rtos::scheduler.create(CB_ReadMAG, {.name = "CB_ReadMAG", .stack_size = 2048, .priority = osPriorityAboveNormal});
-  // hal::rtos::scheduler.create(CB_ReadGNSS, {.name = "CB_ReadGNSS", .stack_size = 2048, .priority = osPriorityAboveNormal});
-  // hal::rtos::scheduler.create(CB_ReadINA, {.name = "CB_ReadINA", .stack_size = 2048, .priority = osPriorityAboveNormal});
-  // hal::rtos::scheduler.create(CB_ReadTOF, {.name = "CB_ReadTOF", .stack_size = 2048, .priority = osPriorityAboveNormal});
+  hal::rtos::scheduler.create(CB_ReadMAG, {.name = "CB_ReadMAG", .stack_size = 2048, .priority = osPriorityAboveNormal});
+  hal::rtos::scheduler.create(CB_ReadGNSS, {.name = "CB_ReadGNSS", .stack_size = 2048, .priority = osPriorityAboveNormal});
+  hal::rtos::scheduler.create(CB_ReadINA, {.name = "CB_ReadINA", .stack_size = 2048, .priority = osPriorityAboveNormal});
+  hal::rtos::scheduler.create(CB_ReadTOF, {.name = "CB_ReadTOF", .stack_size = 2048, .priority = osPriorityAboveNormal});
 
-  // if constexpr (RA_RETAIN_DEPLOYMENT_ENABLED)
-  //   hal::rtos::scheduler.create(CB_RetainDeployment, {.name = "CB_RetainDeployment", .stack_size = 2048, .priority = osPriorityNormal});
+  if constexpr (RA_RETAIN_DEPLOYMENT_ENABLED)
+    hal::rtos::scheduler.create(CB_RetainDeployment, {.name = "CB_RetainDeployment", .stack_size = 2048, .priority = osPriorityNormal});
 
 
   // if constexpr (RA_AUTO_ZERO_ALT_ENABLED)
   //   hal::rtos::scheduler.create(CB_AutoZeroAlt, {.name = "CB_AutoZeroAlt", .stack_size = 4096, .priority = osPriorityHigh});
 
+  hal::rtos::scheduler.create(CB_ConstructData, {.name = "CB_ConstructData", .stack_size = 2048, .priority = osPriorityNormal});
+
   if (pvalid.sd) {
     hal::rtos::scheduler.create(CB_SDLogger, {.name = "CB_SDLogger", .stack_size = 4096, .priority = osPriorityNormal});
   }
 
-  // if (RA_EEPROM_ENABLED)
-  //   hal::rtos::scheduler.create(CB_EEPROMWrite, {.name = "CB_EEPROMWrite", .stack_size = 2048, .priority = osPriorityLow});
+  if (RA_EEPROM_ENABLED)
+    hal::rtos::scheduler.create(CB_EEPROMWrite, {.name = "CB_EEPROMWrite", .stack_size = 2048, .priority = osPriorityLow});
 
-  // hal::rtos::scheduler.create(CB_Transmit, {.name = "CB_Transmit", .stack_size = 2048, .priority = osPriorityNormal});
-  // hal::rtos::scheduler.create(CB_ReceiveCommand, {.name = "CB_ReceiveCommand", .stack_size = 2048, .priority = osPriorityNormal});
+  hal::rtos::scheduler.create(CB_Transmit, {.name = "CB_Transmit", .stack_size = 2048, .priority = osPriorityNormal});
+  hal::rtos::scheduler.create(CB_ReceiveCommand, {.name = "CB_ReceiveCommand", .stack_size = 2048, .priority = osPriorityNormal});
 
-  // hal::rtos::scheduler.create(CB_NeoPixelBlink, {.name = "CB_NeoPixelBlink", .stack_size = 1024, .priority = osPriorityNormal});
+  hal::rtos::scheduler.create(CB_NeoPixelBlink, {.name = "CB_NeoPixelBlink", .stack_size = 1024, .priority = osPriorityNormal});
 
   if constexpr (RA_USB_DEBUG_ENABLED)
     hal::rtos::scheduler.create(CB_DebugLogger, {.name = "CB_DebugLogger", .stack_size = 2048, .priority = osPriorityNormal});
 }
 
 void setup() {
+  sd_buf.reserve(4096);
+
   /* BEGIN GPIO AND INTERFACES SETUP */
   UserSetupSD();
   UserSetupGPIO();
-  UserSetupUSART();
   UserSetupLowPower();  // beware servoserial
   UserSetupActuator();
   UserSetupCDC();
+  UserSetupUSART();
   UserSetupSPI();
   UserSetupI2C();
   UserSetupSensor();
@@ -1140,8 +1159,8 @@ void setup() {
     alt_ref = data.altimeter[0].altitude_m;
   }
 
-  // bno_cal.init(static_cast<float>(BNO_MOUNT_OFFSET));
-  // bno_cal.autoNorthLock(bno);
+  bno_cal.init(static_cast<float>(BNO_MOUNT_OFFSET));
+  bno_cal.autoNorthLock(bno);
 
   led.setPixelColor(0, led.Color(0, 255, 0));
   led.setPixelColor(1, led.Color(0, 255, 0));
@@ -1904,15 +1923,32 @@ void HandleCommand(const String &rx) {
   ++last_ack;
 }
 
-void ConstructSD(String &out) {
-  static uint32_t count = 0;
-  csv_stream_lf(out)
+void ConstructString() {
+  // Snapshot and clear freshness flags before building strings.
+  // This mirrors how test_i2c uses local fresh variables per loop iteration:
+  // CB_ConstructData only uses data that actually arrived since the last call.
+  const bool snap_imu = data.imu_fresh;
+  data.imu_fresh      = false;
+  const bool snap_alt = data.alt_fresh;
+  data.alt_fresh      = false;
+  const bool snap_bno = data.bno_fresh;
+  data.bno_fresh      = false;
+  const bool snap_gps = data.gps_fresh;
+  data.gps_fresh      = false;
+  const bool snap_ina = data.ina_fresh;
+  data.ina_fresh      = false;
+  const bool snap_tof = data.tof_fresh;
+  data.tof_fresh      = false;
+
+  // Build into locals first — no lock held during string construction or ADC read.
+  String local_sd, local_tx;
+
+  csv_stream_lf(local_sd)
     << "DDL"
     << packet_count
     << data.utc
     << data.timestamp_epoch
     << millis()
-    << count++
     << state_string(fsm.state())
 
     << 1043          // TEAM_ID
@@ -1975,10 +2011,8 @@ void ConstructSD(String &out) {
     << servo_target_angles[1]             // SERVO_2_TARGET (deg)
     << servo_target_angles[2]             // SERVO_3_TARGET (deg)
     << controller.guidance.last_bearing;  // BEARING (deg)
-}
 
-void ConstructTX(String &out) {
-  csv_stream_lf(out)
+  csv_stream_lf(local_tx)
     << 1043          // TEAM_ID
     << data.utc      // MISSION_TIME
     << packet_count  // PACKET_COUNT
