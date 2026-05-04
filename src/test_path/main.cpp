@@ -21,19 +21,21 @@ namespace Sim {
   constexpr double INIT_VN      = -0.9;   // m/s southward (toward target)
   constexpr double INIT_VE      = -0.6;   // m/s westward (toward target)
 
-  static double lat = START_LAT;
-  static double lon = START_LON;
-  static double alt = START_ALT;
-  static double vn  = INIT_VN;
-  static double ve  = INIT_VE;
-  static float  yaw = 30.0;
+  static double lat     = START_LAT;
+  static double lon     = START_LON;
+  static double alt     = START_ALT;
+  static double vn      = INIT_VN;
+  static double ve      = INIT_VE;
+  static float  yaw     = 30.0;
+  static double heading = std::fmod(std::atan2(INIT_VE, INIT_VN) * RAD_TO_DEG + 360.0, 360.0);
 
   static void update(double dt) {
     lat += (vn * dt) / EARTH_RADIUS_M * RAD_TO_DEG;
     lon += (ve * dt) / (EARTH_RADIUS_M * std::cos(lat * DEG_TO_RAD)) * RAD_TO_DEG;
     alt -= DESCENT_RATE * dt;
     if (alt < 0.0) alt = 0.0;
-    yaw = std::fmod(yaw + YAW_SPIN * dt, 360.0f);
+    yaw     = std::fmod(yaw + YAW_SPIN * dt, 360.0f);
+    heading = std::fmod(std::atan2(ve, vn) * RAD_TO_DEG + 360.0, 360.0);
   }
 }
 
@@ -51,13 +53,14 @@ SFE_UBLOX_GNSS   gnss;
 GPSCoordinate current_pos{};
 GPSCoordinate target_pos = {13.722992512087279, 100.51463610518176};
 
-double alt_msl   = 0;
-double alt_ref   = 0;
-double alt_agl   = 0;
-float  yaw_deg   = 0;
-double vel_n     = 0;
-double vel_e     = 0;
-bool   gps_fixed = false;
+double alt_msl      = 0;
+double alt_ref      = 0;
+double alt_agl      = 0;
+float  yaw_deg      = 0;
+double vel_n        = 0;
+double vel_e        = 0;
+double heading_deg  = 0;
+bool   gps_fixed    = false;
 
 Controller controller;
 
@@ -186,12 +189,13 @@ void loop() {
   main_tick([&]() {
     if (SIM_ENABLE) {
       Sim::update(0.05);
-      current_pos = {Sim::lat, Sim::lon};
-      alt_agl     = Sim::alt;
-      yaw_deg     = Sim::yaw;
-      vel_n       = Sim::vn;
-      vel_e       = Sim::ve;
-      gps_fixed   = Sim::alt > 0.0;
+      current_pos  = {Sim::lat, Sim::lon};
+      alt_agl      = Sim::alt;
+      yaw_deg      = Sim::yaw;
+      vel_n        = Sim::vn;
+      vel_e        = Sim::ve;
+      heading_deg  = Sim::heading;
+      gps_fixed    = Sim::alt > 0.0;
     } else {
       // 1. All I2C reads first — baro every tick, gnss+mag every 2nd tick (100 ms)
       static uint8_t slow_div = 0;
@@ -206,7 +210,7 @@ void loop() {
     // 2. Guidance update — sensor data is ready before this runs
     if (true)
       servo_target_angles = controller.guidance.update(
-        current_pos, target_pos, alt_agl, vel_n, vel_e, yaw_deg);
+        current_pos, target_pos, alt_agl, vel_n, vel_e, yaw_deg, heading_deg);
   });
 
   // Servo PID runs at 5 ms, gated by internal NbDelay — called every loop() iteration

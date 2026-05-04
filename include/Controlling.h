@@ -14,7 +14,6 @@
 template<size_t Size>
 using numeric_vector = xcore::numeric_vector<Size>;
 
-
 // ---------------- CONSTANTS ----------------
 
 constexpr double EARTH_RADIUS_M     = 6371000.0;
@@ -39,16 +38,21 @@ constexpr double KD = 0.15;
 constexpr double at = 0.2;
 
 // Control-vector EMA alpha — smooths u[i] across sector-boundary discontinuities (lower = smoother).
-// At 20 Hz: alpha=0.3 -> ~140 ms tau (too fast), alpha=0.15 -> ~300 ms tau (paraglider appropriate).
-constexpr double at_ctrl = 0.15;
+// At 20 Hz: alpha=0.3 -> ~150 ms tau, alpha=0.15 -> ~300 ms tau (paraglider appropriate).
+constexpr double at_ctrl = 0.3;
 
 // Drift correction gain — how aggressively to steer against GPS drift (0=none, 1=full reflection)
 constexpr double DRIFT_CORRECTION_GAIN = 1.0;
 
+// Heading error deadband — suppresses corrections when target bearing is within ±N° of straight ahead.
+// Prevents unnecessary rope pulls that disturb a stable glide for small angular errors.
+constexpr double HEADING_DEADBAND_DEG = 30.0;
+
 // Slew rate limit on servo target angles — caps how fast the commanded target can change per 10 ms PID step.
-// 400 deg/s × 0.010 s = 4 deg/step; full range (~1570 deg) takes ~4 s to traverse.
+// 800 deg/s × 0.010 s = 8 deg/step; full range (~1570 deg) takes ~2 s to traverse.
 // Prevents guidance jumps (800–1500 deg/update) from driving the PID into limit cycling.
-constexpr double MAX_SLEW_DEG_PER_STEP = 400.0 * 0.010;
+constexpr bool   USE_SLEW_LIMIT        = false;
+constexpr double MAX_SLEW_DEG_PER_STEP = 800.0 * 0.010;
 
 // ---------------- STRUCTS ----------------
 
@@ -323,8 +327,9 @@ struct Guidance {
   // ---- Main guidance update ----
 
   double last_bearing     = 0.0;
+  double last_bearing_raw = 0.0;
   double last_control[3]  = {};
-  double drift_ema        = 0.0;  // smoothed wind-drift angle estimate (deg)
+  double drift_ema        = 0.0;
 
   numeric_vector<3> update(
     const GPSCoordinate &current,
@@ -375,14 +380,23 @@ struct Guidance {
 
     compute_time_in_air(altitude);
 
-    auto target_vec = compute_target_vector(distance, bear_smooth);
-    auto control    = compute_control_vector(target_vec, bearing_raw);
+    // Deadband on bearing_raw: only update control when bearing has shifted by more
+    // than HEADING_DEADBAND_DEG from the last issued correction.  Suppresses minor
+    // oscillations from constantly switching the active rope pair.
+    double bearing_delta = std::fmod(bearing_raw - last_bearing_raw + 540.0, 360.0) - 180.0;
+    if (std::abs(bearing_delta) >= HEADING_DEADBAND_DEG) {
+      last_bearing_raw = bearing_raw;
+      auto target_vec  = compute_target_vector(distance, bear_smooth);
+      auto control     = compute_control_vector(target_vec, bearing_raw);
+      for (int i = 0; i < 3; i++)
+        last_control[i] = ema_filter(control[i], last_control[i], at_ctrl);
+    }
 
-    // EMA on control vector: softens step discontinuities at 120°/240° sector boundaries.
-    // Without this, a bearing crossing a boundary flips which u[i] is active,
-    // causing all three target angles to step simultaneously.
-    for (int i = 0; i < 3; i++)
-      last_control[i] = ema_filter(control[i], last_control[i], at_ctrl);
+    // Zero the idle servo using last_bearing_raw (the sector last_control was computed for),
+    // not live bearing_raw — otherwise a deadband-blocked update leaves old sector values
+    // while zeroing the wrong servo.  Sector 0→idle 2, 1→idle 0, 2→idle 1.
+    static constexpr int IDLE[3] = {2, 0, 1};
+    last_control[IDLE[static_cast<int>(last_bearing_raw / 120.0) % 3]] = 0.0;
 
     numeric_vector<3> control_smoothed{};
     for (int i = 0; i < 3; i++) control_smoothed[i] = last_control[i];
@@ -448,13 +462,14 @@ struct Controller {
     static xcore::NbDelay delay(10, millis);
 
     delay([&]() {
-      // Slew rate limit: advance slewed_targets toward target_angles by at most
-      // MAX_SLEW_DEG_PER_STEP per tick.  Decouples the PID from abrupt guidance
-      // jumps (sector switches, GPS steps) so the servo can actually track.
       for (size_t i = 0; i < 3; ++i) {
-        double step       = target_angles[i] - slewed_targets[i];
-        slewed_targets[i] += std::max(-MAX_SLEW_DEG_PER_STEP,
-                                       std::min( MAX_SLEW_DEG_PER_STEP, step));
+        if constexpr (USE_SLEW_LIMIT) {
+          double step       = target_angles[i] - slewed_targets[i];
+          slewed_targets[i] += std::max(-MAX_SLEW_DEG_PER_STEP,
+                                         std::min( MAX_SLEW_DEG_PER_STEP, step));
+        } else {
+          slewed_targets[i] = target_angles[i];
+        }
       }
 
       for (size_t i = 0; i < 3; ++i) {

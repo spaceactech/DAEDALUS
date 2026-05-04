@@ -100,6 +100,10 @@ constexpr uint32_t RA_STARTUP_COUNTDOWN         = 0. * 1000ul;
 
 /* ACTUATOR SETTINGS */
 
+constexpr int RA_SERVO_A_MIN = 1000;                                // us PWM
+constexpr int RA_SERVO_A_MAX = 2000;                               // us PWM
+constexpr int RA_SERVO_A_CEN = (RA_SERVO_A_MIN + RA_SERVO_A_MAX) / 2;  // us PWM
+
 constexpr int RA_SERVO_MIN = 500;                                // us PWM
 constexpr int RA_SERVO_MAX = 2450;                               // us PWM
 constexpr int RA_SERVO_CEN = (RA_SERVO_MIN + RA_SERVO_MAX) / 2;  // us PWM
