@@ -366,8 +366,10 @@ struct Guidance {
     double corrected_bearing = abs_bearing;
     if (velocity >= 1.0) {
       double drift_error = std::fmod(gps_heading - abs_bearing + 540.0, 360.0) - 180.0;
-      drift_ema          = ema_filter(drift_error, drift_ema, 0.05);
-      corrected_bearing  = std::fmod(abs_bearing - drift_ema * DRIFT_CORRECTION_GAIN + 360.0, 360.0);
+      if (std::abs(drift_error) < 45.0) {
+        drift_ema = ema_filter(drift_error, drift_ema, 0.05);
+      }
+      corrected_bearing = std::fmod(abs_bearing - drift_ema * DRIFT_CORRECTION_GAIN + 360.0, 360.0);
     }
 
     // Convert global bearing to body frame using magnetometer
@@ -391,7 +393,7 @@ struct Guidance {
     if (std::abs(bearing_delta) >= HEADING_DEADBAND_DEG) {
       last_bearing_raw = bearing_raw;
       auto target_vec  = compute_target_vector(distance, bear_smooth);
-      auto control = compute_control_vector(target_vec, bear_smooth);
+      auto control     = compute_control_vector(target_vec, bear_smooth);
       for (int i = 0; i < 3; i++)
         last_control[i] = ema_filter(control[i], last_control[i], at_ctrl);
     }
