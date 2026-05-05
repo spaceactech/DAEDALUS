@@ -205,21 +205,25 @@ struct NavState {
 } nav_state;
 
 // Kinematic sim — advanced by CB_Control each tick when simActivated is true.
+// Walk from (13.723296, 100.515844) → (13.723175, 100.515373) at ~1.4 m/s with oscillating yaw.
 namespace SimNav {
-  constexpr double START_LAT    = 13.722992512087279 + 0.000420;
-  constexpr double START_LON    = 100.51463610518176 + 0.000300;
+  constexpr double START_LAT    = 13.723296212428615;
+  constexpr double START_LON    = 100.51584405033603;
   constexpr double START_ALT    = 100.0;
   constexpr double DESCENT_RATE = 2.0;
-  constexpr float  YAW_SPIN     = 15.0;
-  constexpr double INIT_VN      = -0.9;
-  constexpr double INIT_VE      = -0.6;
+  // Walking velocity components toward end point (~1.4 m/s, heading ~255° SW)
+  constexpr double INIT_VN      = -0.358;  // m/s northward
+  constexpr double INIT_VE      = -1.353;  // m/s eastward
+  constexpr float  YAW_AMP      = 20.0f;   // yaw oscillation amplitude ±20°
+  constexpr float  YAW_FREQ     = 1.5f;    // oscillation frequency rad/s (~4 s period)
 
   static double lat     = START_LAT;
   static double lon     = START_LON;
   static double alt     = START_ALT;
   static double vn      = INIT_VN;
   static double ve      = INIT_VE;
-  static float  yaw     = 30.0;
+  static float  yaw_t   = 0.0f;
+  static float  yaw     = 255.0f;
   static double heading = std::fmod(std::atan2(INIT_VE, INIT_VN) * RAD_TO_DEG + 360.0, 360.0);
 
   static void reset() {
@@ -228,8 +232,9 @@ namespace SimNav {
     alt     = START_ALT;
     vn      = INIT_VN;
     ve      = INIT_VE;
-    yaw     = 30.0;
+    yaw_t   = 0.0f;
     heading = std::fmod(std::atan2(ve, vn) * RAD_TO_DEG + 360.0, 360.0);
+    yaw     = static_cast<float>(heading);
   }
 
   static void update(double dt) {
@@ -237,8 +242,9 @@ namespace SimNav {
     lon += (ve * dt) / (EARTH_RADIUS_M * std::cos(lat * DEG_TO_RAD)) * RAD_TO_DEG;
     alt -= DESCENT_RATE * dt;
     if (alt < 0.0) alt = 0.0;
-    yaw     = std::fmod(yaw + YAW_SPIN * dt, 360.0f);
     heading = std::fmod(std::atan2(ve, vn) * RAD_TO_DEG + 360.0, 360.0);
+    yaw_t  += static_cast<float>(dt);
+    yaw     = std::fmod(static_cast<float>(heading) + YAW_AMP * std::sin(YAW_FREQ * yaw_t) + 360.0f, 360.0f);
   }
 }  // namespace SimNav
 
@@ -1948,9 +1954,7 @@ void HandleCommand(const String &rx) {
 
     /* ========== RESET ========== */
   } else if (strcmp(p2, "RESET") == 0) {
-    if (pvalid.sd) {
-      mtx_sdio.exec([&]() { fs_sd.close_one(); });
-    }
+
     delay(100);
     __NVIC_SystemReset();
 
@@ -2119,8 +2123,8 @@ void ConstructString() {
 
     << data.cmd_echo  // CMD_ECHO
 
-    // << std::fmod(std::fmod(data.yaw - SPOOL_PHYSICAL_OFFSET, 360.0) + 360.0, 360.0)
-    // << data.heading_gps
+    << std::fmod(std::fmod(data.yaw - SPOOL_PHYSICAL_OFFSET, 360.0) + 360.0, 360.0)
+    << data.heading_gps
     // << data.tof
     // << data.velocity_e
     // << data.velocity_n

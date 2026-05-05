@@ -20,7 +20,7 @@ constexpr size_t RA_NUM_ALTIMETER = 2;
 constexpr size_t RA_NUM_GNSS = 0;
 
 // LEDs
-constexpr bool RA_LED_ENABLED = true;
+constexpr bool RA_LED_ENABLED = false;
 
 // USB Debug
 constexpr bool RA_USB_DEBUG_ENABLED = true;

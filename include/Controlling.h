@@ -368,9 +368,7 @@ struct Guidance {
     double distance    = calculate_distance(current, target);
     double bearing_raw = std::fmod(corrected_bearing - theta_offset + 360.0, 360.0);
 
-    // EMA smooths spin oscillations — applied to force-vector direction only.
-    // Sector selection stays on raw bearing: EMA lag (up to ~70° avg at 139 deg/s)
-    // would otherwise slip into the wrong 120° cable sector.
+    // EMA smooths bearing to prevent spin oscillations from flipping control sectors.
     double b_rad       = bearing_raw * DEG_TO_RAD;
     bear_sin           = ema_filter(std::sin(b_rad), bear_sin, at);
     bear_cos           = ema_filter(std::cos(b_rad), bear_cos, at);
@@ -387,7 +385,7 @@ struct Guidance {
     if (std::abs(bearing_delta) >= HEADING_DEADBAND_DEG) {
       last_bearing_raw = bearing_raw;
       auto target_vec  = compute_target_vector(distance, bear_smooth);
-      auto control     = compute_control_vector(target_vec, bearing_raw);
+      auto control     = compute_control_vector(target_vec, bear_smooth);
       for (int i = 0; i < 3; i++)
         last_control[i] = ema_filter(control[i], last_control[i], at_ctrl);
     }
