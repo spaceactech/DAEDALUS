@@ -212,10 +212,10 @@ namespace SimNav {
   constexpr double START_ALT    = 100.0;
   constexpr double DESCENT_RATE = 2.0;
   // Walking velocity components toward end point (~1.4 m/s, heading ~255° SW)
-  constexpr double INIT_VN      = -0.358;  // m/s northward
-  constexpr double INIT_VE      = -1.353;  // m/s eastward
-  constexpr float  YAW_AMP      = 20.0f;   // yaw oscillation amplitude ±20°
-  constexpr float  YAW_FREQ     = 1.5f;    // oscillation frequency rad/s (~4 s period)
+  constexpr double INIT_VN  = -0.358;  // m/s northward
+  constexpr double INIT_VE  = -1.353;  // m/s eastward
+  constexpr float  YAW_AMP  = 20.0f;   // yaw oscillation amplitude ±20°
+  constexpr float  YAW_FREQ = 1.5f;    // oscillation frequency rad/s (~4 s period)
 
   static double lat     = START_LAT;
   static double lon     = START_LON;
@@ -243,8 +243,8 @@ namespace SimNav {
     alt -= DESCENT_RATE * dt;
     if (alt < 0.0) alt = 0.0;
     heading = std::fmod(std::atan2(ve, vn) * RAD_TO_DEG + 360.0, 360.0);
-    yaw_t  += static_cast<float>(dt);
-    yaw     = std::fmod(static_cast<float>(heading) + YAW_AMP * std::sin(YAW_FREQ * yaw_t) + 360.0f, 360.0f);
+    yaw_t += static_cast<float>(dt);
+    yaw = std::fmod(static_cast<float>(heading) + YAW_AMP * std::sin(YAW_FREQ * yaw_t) + 360.0f, 360.0f);
   }
 }  // namespace SimNav
 
@@ -777,8 +777,8 @@ void CB_SDLogger(void *) {
   static uint8_t flush_counter = 0;
   snap.reserve(4096);
 
-  hal::rtos::interval_loop(100ul, [&]() -> void {
-  // hal::rtos::interval_loop(500ul, LoggerInterval, [&]() -> void {
+  // hal::rtos::interval_loop(100ul, [&]() -> void {
+  hal::rtos::interval_loop(500ul, LoggerInterval, [&]() -> void {
 
 #ifdef RA_STACK_HWM_ENABLED
     stack_hwm.sdlog = uxTaskGetStackHighWaterMark(NULL);
@@ -1414,7 +1414,6 @@ void ReadAltimeter(size_t i) {
 
   if (simActivated && simEnabled) {
     double sim_alt_msl             = altitude_msl_from_pressure(simPressure / 100.F);
-    data.altimeter[i].altitude_m   = sim_alt_msl;
     data.altimeter[i].pressure_hpa = simPressure / 100.F;
     alt_agl                        = sim_alt_msl;
   } else {
@@ -2041,8 +2040,9 @@ void ConstructString() {
     // 7–11
     << data.altimeter[0].temperature   // TEMPERATURE (°C, 0.1)
     << data.altimeter[0].pressure_hpa  // PRESSURE (kPa, 0.1)
-    << data.batt_volt                  // VOLTAGE (V, 0.1)
-    << data.batt_curr                  // CURRENT (A, 0.01)
+    << data.altimeter[0].altitude_m   // TEMPERATURE 
+    << data.batt_volt  // VOLTAGE (V, 0.1)
+    << data.batt_curr  // CURRENT (A, 0.01)
 
     // 12–14 Gyro
     << data.imu[0].gyr_x  // GYRO_R
@@ -2081,38 +2081,39 @@ void ConstructString() {
     << pos_a  // Servo A
     << pos_b
     << data.cpu_temp
-    << controller.last_angles[0]  // SERVO_1_ANGLE (deg)
-    << controller.last_angles[1]  // SERVO_2_ANGLE (deg)
-    << controller.last_angles[2]  // SERVO_3_ANGLE (deg)
-    << servo_target_angles[0]     // SERVO_1_TARGET (deg)
-    << servo_target_angles[1]     // SERVO_2_TARGET (deg)
-    << servo_target_angles[2];    // SERVO_3_TARGET (deg)
+    << servo_target_angles[0]  // SERVO_1_TARGET (deg)
+    << servo_target_angles[1]  // SERVO_2_TARGET (deg)
+    << servo_target_angles[2]  // SERVO_3_TARGET (deg)
+
+    << controller.last_angles[0]   // SERVO_1_ANGLE (deg)
+    << controller.last_angles[1]   // SERVO_2_ANGLE (deg)
+    << controller.last_angles[2];  // SERVO_3_ANGLE (deg)
 
   csv_stream_lf(local_tx)
-    // << 1043          // TEAM_ID
-    // << data.utc      // MISSION_TIME
-    // << packet_count  // PACKET_COUNT
-    // << data.mode     // MODE
+    << 1043          // TEAM_ID
+    << data.utc      // MISSION_TIME
+    << packet_count  // PACKET_COUNT
+    << data.mode     // MODE
 
-    // // 5–6
-    // << state_string(fsm.state())  // STATE
-    // << s_alt_agl
+    // 5–6
+    << state_string(fsm.state())  // STATE
+    << s_alt_agl
 
-    // // 7–11
-    // << s_temp          // TEMPERATURE (°C, 0.1)
-    // << s_press         // PRESSURE (kPa, 0.1)
-    // << s_volt          // VOLTAGE (V, 0.1)
-    // << data.batt_curr  // CURRENT (A, 0.01)
+    // 7–11
+    << s_temp          // TEMPERATURE (°C, 0.1)
+    << s_press         // PRESSURE (kPa, 0.1)
+    << s_volt          // VOLTAGE (V, 0.1)
+    << data.batt_curr  // CURRENT (A, 0.01)
 
-    // // 12–14 Gyro
-    // << data.imu[0].gyr_x  // GYRO_R
-    // << data.imu[0].gyr_y  // GYRO_P
-    // << data.imu[0].gyr_z  // GYRO_Y
+    // 12–14 Gyro
+    << data.imu[0].gyr_x  // GYRO_R
+    << data.imu[0].gyr_y  // GYRO_P
+    << data.imu[0].gyr_z  // GYRO_Y
 
-    // // 15–17 Accel
-    // << data.imu[0].acc_x  // ACCEL_R
-    // << data.imu[0].acc_y  // ACCEL_P
-    // << data.imu[0].acc_z  // ACCEL_Y
+    // 15–17 Accel
+    << data.imu[0].acc_x  // ACCEL_R
+    << data.imu[0].acc_y  // ACCEL_P
+    << data.imu[0].acc_z  // ACCEL_Y
 
     // // 18–22 GPS
     << data.utc   // GPS_TIME
@@ -2125,10 +2126,10 @@ void ConstructString() {
 
     << std::fmod(std::fmod(data.yaw - SPOOL_PHYSICAL_OFFSET, 360.0) + 360.0, 360.0)
     << data.heading_gps
-    // << data.tof
-    // << data.velocity_e
-    // << data.velocity_n
-    // << data.deploy
+    << data.tof
+    << data.velocity_e
+    << data.velocity_n
+    << data.deploy
     // << RA_APOGEE_ALT
     // << RA_MAIN_ALT_COMPENSATED
     // << RA_LAUNCH_ALT

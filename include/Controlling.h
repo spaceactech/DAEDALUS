@@ -16,14 +16,14 @@ using numeric_vector = xcore::numeric_vector<Size>;
 
 // ---------------- CONSTANTS ----------------
 
-constexpr double EARTH_RADIUS_M     = 6371000.0;
+constexpr double EARTH_RADIUS_M         = 6371000.0;
 constexpr double MAX_DISTANCE_TO_TARGET = 59.16;
-constexpr double MAX_SERVO_SPEED = 800.0;
+constexpr double MAX_SERVO_SPEED        = 800.0;
 
 constexpr double SPOOL_RADIUS = 0.0109;
 
 // rope pull limit ΔL=L±L2−2sL2−s2​sinα​
-constexpr double dL_max       = 0.298758; //30 degree
+constexpr double dL_max = 0.298758;  //30 degree
 // constexpr double dL_max       = 0.34714423; //35 degree
 //  constexpr double dL_max       = 0.39; //40 degree
 
@@ -46,7 +46,7 @@ constexpr double DRIFT_CORRECTION_GAIN = 1.0;
 
 // Heading error deadband — suppresses corrections when target bearing is within ±N° of straight ahead.
 // Prevents unnecessary rope pulls that disturb a stable glide for small angular errors.
-constexpr double HEADING_DEADBAND_DEG = 30.0;
+constexpr double HEADING_DEADBAND_DEG = 15.0;
 
 // Slew rate limit on servo target angles — caps how fast the commanded target can change per 10 ms PID step.
 // 800 deg/s × 0.010 s = 8 deg/step; full range (~1570 deg) takes ~2 s to traverse.
@@ -74,8 +74,14 @@ struct EncoderTracker {
     bool crossover = false;
 
     // Rollover detection: only valid if servo moves <180 deg per read interval
-    if (diff > 2048)  { rotation_count--; crossover = true; }
-    if (diff < -2048) { rotation_count++; crossover = true; }
+    if (diff > 2048) {
+      rotation_count--;
+      crossover = true;
+    }
+    if (diff < -2048) {
+      rotation_count++;
+      crossover = true;
+    }
 
     double new_angle = (rotation_count * 4096L + pos) * ENC_TO_DEG;
 
@@ -311,7 +317,7 @@ struct Guidance {
   // others scale proportionally. Negative components are clamped to zero (ropes can only pull).
 
   static numeric_vector<3> control_to_servo_angle(const numeric_vector<3> &u) {
-    constexpr double TWO_INV_SQRT3 = 1.15470053838;  // max component for unit-distance input
+    constexpr double  TWO_INV_SQRT3 = 1.15470053838;  // max component for unit-distance input
     numeric_vector<3> angle{};
 
     for (int i = 0; i < 3; i++) {
@@ -385,7 +391,7 @@ struct Guidance {
     if (std::abs(bearing_delta) >= HEADING_DEADBAND_DEG) {
       last_bearing_raw = bearing_raw;
       auto target_vec  = compute_target_vector(distance, bear_smooth);
-      auto control     = compute_control_vector(target_vec, bear_smooth);
+      auto control = compute_control_vector(target_vec, bear_smooth);
       for (int i = 0; i < 3; i++)
         last_control[i] = ema_filter(control[i], last_control[i], at_ctrl);
     }
@@ -393,7 +399,7 @@ struct Guidance {
     // Zero the idle servo using last_bearing_raw (the sector last_control was computed for),
     // not live bearing_raw — otherwise a deadband-blocked update leaves old sector values
     // while zeroing the wrong servo.  Sector 0→idle 2, 1→idle 0, 2→idle 1.
-    static constexpr int IDLE[3] = {2, 0, 1};
+    static constexpr int IDLE[3]                                       = {2, 0, 1};
     last_control[IDLE[static_cast<int>(last_bearing_raw / 120.0) % 3]] = 0.0;
 
     numeric_vector<3> control_smoothed{};
@@ -423,10 +429,10 @@ struct Controller {
   int16_t     last_speeds[3] = {};
 
   // Per-servo direction sign; flips automatically when wrong-way travel is detected
-  int8_t  dirs[3]           = {1, 1, 1};
-  double  prev_angles[3]    = {};
-  double  wrong_accum[3]    = {};
-  double  slewed_targets[3] = {};
+  int8_t dirs[3]           = {1, 1, 1};
+  double prev_angles[3]    = {};
+  double wrong_accum[3]    = {};
+  double slewed_targets[3] = {};
 
   static constexpr double SWAP_THRESHOLD_DEG = 100.0;
 
@@ -462,19 +468,19 @@ struct Controller {
     delay([&]() {
       for (size_t i = 0; i < 3; ++i) {
         if constexpr (USE_SLEW_LIMIT) {
-          double step       = target_angles[i] - slewed_targets[i];
+          double step = target_angles[i] - slewed_targets[i];
           slewed_targets[i] += std::max(-MAX_SLEW_DEG_PER_STEP,
-                                         std::min( MAX_SLEW_DEG_PER_STEP, step));
+                                        std::min(MAX_SLEW_DEG_PER_STEP, step));
         } else {
           slewed_targets[i] = target_angles[i];
         }
       }
 
       for (size_t i = 0; i < 3; ++i) {
-        last_angles[i]  = driver.read_angle(i);
-        double err      = slewed_targets[i] - last_angles[i];
-        double motion   = last_angles[i] - prev_angles[i];
-        int16_t speed   = 0;
+        last_angles[i] = driver.read_angle(i);
+        double  err    = slewed_targets[i] - last_angles[i];
+        double  motion = last_angles[i] - prev_angles[i];
+        int16_t speed  = 0;
 
         // Deadband
         if (std::abs(err) >= 8.0) {
