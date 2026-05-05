@@ -33,7 +33,7 @@ constexpr double BNO_MOUNT_OFFSET      = 106.6;   // PCB mounting correction (de
 constexpr double SPOOL_PHYSICAL_OFFSET = 45.0;  // For CanSat
 
 // Stack High Water Mark (define to enable per-thread RAM reporting via serial)
-#define RA_STACK_HWM_ENABLED
+// #define RA_STACK_HWM_ENABLED
 
 // Minimum free stack words before a task is flagged with '!' in HWM output
 // (uxTaskGetStackHighWaterMark returns words; 1 word = 4 bytes on ARM Cortex-M)

@@ -5,7 +5,7 @@
 #include <math.h>
 #include "Controlling.h"
 
-GPSCoordinate target_location = {12.980314675012824, 101.45313070631086};
+GPSCoordinate target_location = {13.723133359918828, 100.51516142821684};
 
 /* Telemetry control */
 bool telemetry_enabled = true;  // need to false

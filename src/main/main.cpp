@@ -842,7 +842,7 @@ void CB_Control(void *) {
     // simActivated also sims CB_Control: real GPS/IMU nav is replaced by SimNav synthetic state.
 
     // In real flight only run the spool servos during paraglider descent.
-    if (!simActivated && fsm.state() != UserState::PAYLOAD_REALEASE) return;
+    // if (!simActivated && fsm.state() != UserState::PAYLOAD_REALEASE) return;
 
     // Smooth yaw through sin/cos EMA to handle 0/360 wrap.  Raw body yaw had
     // 103 deg std in flight, injecting noise into theta_offset at 20 Hz and
@@ -1110,9 +1110,9 @@ void UserThreads() {
 
   hal::rtos::scheduler.create(CB_ConstructData, {.name = "CB_ConstructData", .stack_size = 2048, .priority = osPriorityNormal});
 
-  if (pvalid.sd) {
+  if (pvalid.sd)
     hal::rtos::scheduler.create(CB_SDLogger, {.name = "CB_SDLogger", .stack_size = 4096, .priority = osPriorityRealtime1});
-  }
+
 
   if (RA_EEPROM_ENABLED)
     hal::rtos::scheduler.create(CB_EEPROMWrite, {.name = "CB_EEPROMWrite", .stack_size = 2048, .priority = osPriorityLow});
@@ -1940,7 +1940,7 @@ void HandleCommand(const String &rx) {
     led.show();
 
     LowPower.deepSleep();
-    
+
     if (pvalid.sd) {
       mtx_sdio.exec([&]() { fs_sd.close_one(); });
     }
@@ -2085,32 +2085,32 @@ void ConstructString() {
     << servo_target_angles[2];    // SERVO_3_TARGET (deg)
 
   csv_stream_lf(local_tx)
-    << 1043          // TEAM_ID
-    << data.utc      // MISSION_TIME
-    << packet_count  // PACKET_COUNT
-    << data.mode     // MODE
+    // << 1043          // TEAM_ID
+    // << data.utc      // MISSION_TIME
+    // << packet_count  // PACKET_COUNT
+    // << data.mode     // MODE
 
-    // 5–6
-    << state_string(fsm.state())  // STATE
-    << s_alt_agl
+    // // 5–6
+    // << state_string(fsm.state())  // STATE
+    // << s_alt_agl
 
-    // 7–11
-    << s_temp          // TEMPERATURE (°C, 0.1)
-    << s_press         // PRESSURE (kPa, 0.1)
-    << s_volt          // VOLTAGE (V, 0.1)
-    << data.batt_curr  // CURRENT (A, 0.01)
+    // // 7–11
+    // << s_temp          // TEMPERATURE (°C, 0.1)
+    // << s_press         // PRESSURE (kPa, 0.1)
+    // << s_volt          // VOLTAGE (V, 0.1)
+    // << data.batt_curr  // CURRENT (A, 0.01)
 
-    // 12–14 Gyro
-    << data.imu[0].gyr_x  // GYRO_R
-    << data.imu[0].gyr_y  // GYRO_P
-    << data.imu[0].gyr_z  // GYRO_Y
+    // // 12–14 Gyro
+    // << data.imu[0].gyr_x  // GYRO_R
+    // << data.imu[0].gyr_y  // GYRO_P
+    // << data.imu[0].gyr_z  // GYRO_Y
 
-    // 15–17 Accel
-    << data.imu[0].acc_x  // ACCEL_R
-    << data.imu[0].acc_y  // ACCEL_P
-    << data.imu[0].acc_z  // ACCEL_Y
+    // // 15–17 Accel
+    // << data.imu[0].acc_x  // ACCEL_R
+    // << data.imu[0].acc_y  // ACCEL_P
+    // << data.imu[0].acc_z  // ACCEL_Y
 
-    // 18–22 GPS
+    // // 18–22 GPS
     << data.utc   // GPS_TIME
     << s_gps_alt  // GPS_ALTITUDE (m, 0.1)
     << s_lat      // GPS_LATITUDE
@@ -2119,16 +2119,16 @@ void ConstructString() {
 
     << data.cmd_echo  // CMD_ECHO
 
-    << std::fmod(std::fmod(data.yaw - SPOOL_PHYSICAL_OFFSET, 360.0) + 360.0, 360.0)
-    << data.heading_gps
-    << data.tof
-    << data.velocity_e
-    << data.velocity_n
-    << data.deploy
-    << RA_APOGEE_ALT
-    << RA_MAIN_ALT_COMPENSATED
-    << RA_LAUNCH_ALT
-    << RA_INS_CRIT_THRESHOLD
+    // << std::fmod(std::fmod(data.yaw - SPOOL_PHYSICAL_OFFSET, 360.0) + 360.0, 360.0)
+    // << data.heading_gps
+    // << data.tof
+    // << data.velocity_e
+    // << data.velocity_n
+    // << data.deploy
+    // << RA_APOGEE_ALT
+    // << RA_MAIN_ALT_COMPENSATED
+    // << RA_LAUNCH_ALT
+    // << RA_INS_CRIT_THRESHOLD
     << servo_target_angles[0]      // SERVO_1_TARGET (deg)
     << controller.last_angles[0]   // SERVO_1_ANGLE (deg)
     << servo_target_angles[1]      // SERVO_2_TARGET (deg)
