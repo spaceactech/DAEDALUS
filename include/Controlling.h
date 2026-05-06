@@ -35,18 +35,18 @@ constexpr double KI = 0.0;
 constexpr double KD = 0.15;
 
 // Bearing EMA alpha — controls force-vector smoothing (sector selection uses raw bearing)
-constexpr double at = 0.2;
+inline float at = 0.2f;
 
 // Control-vector EMA alpha — smooths u[i] across sector-boundary discontinuities (lower = smoother).
 // At 20 Hz: alpha=0.3 -> ~150 ms tau, alpha=0.15 -> ~300 ms tau (paraglider appropriate).
-constexpr double at_ctrl = 0.3;
+inline float at_ctrl = 0.3f;
 
 // Drift correction gain — how aggressively to steer against GPS drift (0=none, 1=full reflection)
-constexpr double DRIFT_CORRECTION_GAIN = 1.0;
+inline float DRIFT_CORRECTION_GAIN = 1.0f;
 
 // Heading error deadband — suppresses corrections when target bearing is within ±N° of straight ahead.
 // Prevents unnecessary rope pulls that disturb a stable glide for small angular errors.
-constexpr double HEADING_DEADBAND_DEG = 15.0;
+inline float HEADING_DEADBAND_DEG = 15.0f;
 
 // Slew rate limit on servo target angles — caps how fast the commanded target can change per 10 ms PID step.
 // 800 deg/s × 0.010 s = 8 deg/step; full range (~1570 deg) takes ~2 s to traverse.
@@ -274,41 +274,22 @@ struct Guidance {
 
   // ---- Control allocation ----
 
-  static numeric_vector<3> compute_control_vector(
-    const numeric_vector<2> &target,
-    double                   theta) {
+  static numeric_vector<3> compute_control_vector(const numeric_vector<2> &target) {
     constexpr double INV_SQRT3     = 0.57735026919;
     constexpr double TWO_INV_SQRT3 = 1.15470053838;
 
     double X = target[0];
     double Y = target[1];
 
-    double u1 = 0, u2 = 0, u3 = 0;
-
-    theta = std::fmod(theta, 360.0);
-    if (theta < 0) theta += 360.0;
-
-    if (theta >= 0 && theta < 120)
-      u1 = X + INV_SQRT3 * Y;
-    else if (theta >= 240 && theta < 360)
-      u1 = X - INV_SQRT3 * Y;
-
-    if (theta >= 0 && theta < 120)
-      u2 = TWO_INV_SQRT3 * Y;
-    else if (theta >= 120 && theta < 240)
-      u2 = -X + INV_SQRT3 * Y;
-
-    if (theta >= 240 && theta < 360)
-      u3 = -TWO_INV_SQRT3 * Y;
-    else if (theta >= 120 && theta < 240)
-      u3 = -X - INV_SQRT3 * Y;
-
+    // Moore-Penrose pseudoinverse of the equilateral thruster matrix (ropes at
+    // 0°/120°/240° body frame), scaled by √3 so the max positive component for a
+    // unit-distance input equals TWO_INV_SQRT3 — matching control_to_servo_angle's
+    // normaliser.  Negative components are clamped to 0 downstream (ropes can only
+    // pull).  Continuous at all bearings; no sector boundaries, no chattering.
     numeric_vector<3> out{};
-
-    out[0] = u1;
-    out[1] = u2;
-    out[2] = u3;
-
+    out[0] = std::max(0.0,  TWO_INV_SQRT3 * X);
+    out[1] = std::max(0.0, -INV_SQRT3     * X + Y);
+    out[2] = std::max(0.0, -INV_SQRT3     * X - Y);
     return out;
   }
 
@@ -388,23 +369,21 @@ struct Guidance {
 
     // Deadband on bearing_raw: only update control when bearing has shifted by more
     // than HEADING_DEADBAND_DEG from the last issued correction.  Suppresses minor
-    // oscillations from constantly switching the active rope pair.
+    // oscillations from GPS/EMA noise continuously re-computing commands.
     double bearing_delta = std::fmod(bearing_raw - last_bearing_raw + 540.0, 360.0) - 180.0;
     if (std::abs(bearing_delta) >= HEADING_DEADBAND_DEG) {
       last_bearing_raw = bearing_raw;
       auto target_vec  = compute_target_vector(distance, bear_smooth);
-      auto control     = compute_control_vector(target_vec, bear_smooth);
-      for (int i = 0; i < 3; i++)
-        last_control[i] = ema_filter(control[i], last_control[i], at_ctrl);
+      auto control     = compute_control_vector(target_vec);
+      for (int i = 0; i < 3; i++) {
+        if (control[i] > 0.0)
+          last_control[i] = ema_filter(control[i], last_control[i], at_ctrl);
+        else
+          last_control[i] = 0.0;
+      }
     }
 
-    // Zero the idle servo using last_bearing_raw (the sector last_control was computed for),
-    // not live bearing_raw — otherwise a deadband-blocked update leaves old sector values
-    // while zeroing the wrong servo.  Sector 0→idle 2, 1→idle 0, 2→idle 1.
-    static constexpr int IDLE[3]                                       = {2, 0, 1};
-    last_control[IDLE[static_cast<int>(last_bearing_raw / 120.0) % 3]] = 0.0;
-
-    numeric_vector<3> control_smoothed{};
+numeric_vector<3> control_smoothed{};
     for (int i = 0; i < 3; i++) control_smoothed[i] = last_control[i];
 
     return control_to_servo_angle(control_smoothed);

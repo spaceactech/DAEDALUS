@@ -828,7 +828,7 @@ void CB_Control(void *) {
 #ifdef RA_STACK_HWM_ENABLED
     stack_hwm.control = uxTaskGetStackHighWaterMark(NULL);
 #endif
-    static xcore::FfTimer duty_timer(7000UL, 3000UL, millis);
+    static xcore::FfTimer duty_timer(4000UL, 6000UL, millis);
     duty_timer
       .on_rising([&]() {
         for (size_t i = 0; i < sizeof(ServoDriver::IDS); ++i)

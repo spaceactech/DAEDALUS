@@ -20,7 +20,7 @@ constexpr size_t RA_NUM_ALTIMETER = 2;
 constexpr size_t RA_NUM_GNSS = 0;
 
 // LEDs
-constexpr bool RA_LED_ENABLED = true;
+constexpr bool RA_LED_ENABLED = false;
 
 // USB Debug
 constexpr bool RA_USB_DEBUG_ENABLED = true;
@@ -46,7 +46,7 @@ constexpr bool RA_RETAIN_DEPLOYMENT_ENABLED = true;
 // When true, EEPROM_Read() restores the last saved state (if magic + CRC valid)
 // and CB_EEPROMWrite runs every RA_EEPROM_WRITE_INTERVAL ms.
 // Set false to disable all EEPROM activity and always start clean.
-constexpr bool RA_EEPROM_ENABLED = false;
+constexpr bool RA_EEPROM_ENABLED = true;
 
 // EEPROM write interval (ms)
 constexpr uint32_t RA_EEPROM_WRITE_INTERVAL = 10000ul;  // 10 s

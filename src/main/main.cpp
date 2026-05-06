@@ -107,12 +107,30 @@ void EEPROM_Write() {
   s.magic = EEPROM_MAGIC;
   memcpy(s.utc, data.utc, sizeof(s.utc));
   s.packet_count = packet_count;
-  // s.state        = static_cast<uint8_t>(fsm.state());
+  s.state        = static_cast<uint8_t>(fsm.state());
   s.alt_ref = alt_ref;
   s.pos_a   = pos_a;
   s.pos_b   = pos_b;
   for (size_t i = 0; i < 3; ++i)
     s.servo_angles[i] = controller.last_angles[i];
+
+  // Guidance config is only written by SET commands — preserve whatever is in BKPSRAM.
+  // On first boot (no valid magic) fall back to the in-memory defaults.
+  {
+    EEPROMStore prev{};
+    memcpy(&prev, reinterpret_cast<const void *>(BKPSRAM_BASE), sizeof(prev));
+    if (prev.magic == EEPROM_MAGIC) {
+      s.bearing_ema_alpha     = prev.bearing_ema_alpha;
+      s.ctrl_ema_alpha        = prev.ctrl_ema_alpha;
+      s.drift_correction_gain = prev.drift_correction_gain;
+      s.heading_deadband_deg  = prev.heading_deadband_deg;
+    } else {
+      s.bearing_ema_alpha     = at;
+      s.ctrl_ema_alpha        = at_ctrl;
+      s.drift_correction_gain = DRIFT_CORRECTION_GAIN;
+      s.heading_deadband_deg  = HEADING_DEADBAND_DEG;
+    }
+  }
 
   s.crc = eeprom_crc8(
     reinterpret_cast<const uint8_t *>(&s) + EEPROM_PAYLOAD_OFFSET,
@@ -137,12 +155,32 @@ void EEPROM_Read() {
 
   memcpy(data.utc, s.utc, sizeof(data.utc));
   packet_count = s.packet_count;
-  // fsm.transfer(static_cast<UserState>(s.state));
+  fsm.transfer(static_cast<UserState>(s.state));
   alt_ref = s.alt_ref;
   pos_a   = s.pos_a;
   pos_b   = s.pos_b;
   for (size_t i = 0; i < 3; ++i)
     controller.last_angles[i] = s.servo_angles[i];
+  at                    = s.bearing_ema_alpha;
+  at_ctrl               = s.ctrl_ema_alpha;
+  DRIFT_CORRECTION_GAIN = s.drift_correction_gain;
+  HEADING_DEADBAND_DEG  = s.heading_deadband_deg;
+}
+
+// Write guidance config fields only — does a read-modify-write so flight state is untouched.
+void EEPROM_WriteGuidanceCfg() {
+  EEPROMStore s{};
+  memcpy(&s, reinterpret_cast<const void *>(BKPSRAM_BASE), sizeof(s));
+  s.magic                 = EEPROM_MAGIC;
+  s.bearing_ema_alpha     = at;
+  s.ctrl_ema_alpha        = at_ctrl;
+  s.drift_correction_gain = DRIFT_CORRECTION_GAIN;
+  s.heading_deadband_deg  = HEADING_DEADBAND_DEG;
+  s.crc = eeprom_crc8(
+    reinterpret_cast<const uint8_t *>(&s) + EEPROM_PAYLOAD_OFFSET,
+    sizeof(EEPROMStore) - EEPROM_PAYLOAD_OFFSET);
+  memcpy(reinterpret_cast<void *>(BKPSRAM_BASE), &s, sizeof(s));
+  __DSB();
 }
 
 /* BEGIN SD CARD */
@@ -848,7 +886,7 @@ void CB_Control(void *) {
     // simActivated also sims CB_Control: real GPS/IMU nav is replaced by SimNav synthetic state.
 
     // In real flight only run the spool servos during paraglider descent.
-    // if (!simActivated && fsm.state() != UserState::PAYLOAD_REALEASE) return;
+    if (!simActivated && fsm.state() != UserState::PAYLOAD_REALEASE) return;
 
     // Smooth yaw through sin/cos EMA to handle 0/360 wrap.  Raw body yaw had
     // 103 deg std in flight, injecting noise into theta_offset at 20 Hz and
@@ -1265,10 +1303,11 @@ void EvalFSM() {
       sampler_sec.add_sample(alt_agl);  // Use filtered alt
 
 
-      if ((sampler.is_sampled() &&
-           sampler.over_by_under<double>() > RA_TRUE_TO_FALSE_RATIO) ||
-          (sampler_sec.is_sampled() &&
-           sampler_sec.over_by_under<double>() > RA_TRUE_TO_FALSE_RATIO)) {
+      if (data.armed[0] == 'A' &&
+          ((sampler.is_sampled() &&
+            sampler.over_by_under<double>() > RA_TRUE_TO_FALSE_RATIO) ||
+           (sampler_sec.is_sampled() &&
+            sampler_sec.over_by_under<double>() > RA_TRUE_TO_FALSE_RATIO))) {
         fsm.transfer(UserState::ASCENT);
       }
 
@@ -1310,7 +1349,6 @@ void EvalFSM() {
 
     case UserState::APOGEE: {
       // <--- Next: always transfer --->
-      // RA_MAIN_ALT_COMPENSATED = apogee_raw * 0.8;
       hal::rtos::delay_ms(1500);
       fsm.transfer(UserState::DESCENT);
       break;
@@ -1319,6 +1357,7 @@ void EvalFSM() {
     case UserState::DESCENT: {
       // <--- Next: always transfer --->
       hal::rtos::delay_ms(1500);
+      RA_MAIN_ALT_COMPENSATED = apogee_raw * 0.8;
       fsm.transfer(UserState::PROBE_REALEASE);
       break;
     }
@@ -1806,6 +1845,30 @@ void HandleCommand(const String &rx) {
       }
       RA_INS_CRIT_THRESHOLD = val;
       ins_thresholds_dirty  = true;
+    } else if (strcmp(p3, "AT") == 0) {
+      char        *end;
+      const double val = strtod(p4, &end);
+      if (end == p4 || *end != '\0' || val <= 0.0 || val > 1.0) { ++last_nack; return; }
+      at = static_cast<float>(val);
+      EEPROM_WriteGuidanceCfg();
+    } else if (strcmp(p3, "AT_CTRL") == 0) {
+      char        *end;
+      const double val = strtod(p4, &end);
+      if (end == p4 || *end != '\0' || val <= 0.0 || val > 1.0) { ++last_nack; return; }
+      at_ctrl = static_cast<float>(val);
+      EEPROM_WriteGuidanceCfg();
+    } else if (strcmp(p3, "DRIFT_GAIN") == 0) {
+      char        *end;
+      const double val = strtod(p4, &end);
+      if (end == p4 || *end != '\0' || val < 0.0 || val > 1.0) { ++last_nack; return; }
+      DRIFT_CORRECTION_GAIN = static_cast<float>(val);
+      EEPROM_WriteGuidanceCfg();
+    } else if (strcmp(p3, "HDBAND") == 0) {
+      char        *end;
+      const double val = strtod(p4, &end);
+      if (end == p4 || *end != '\0' || val < 0.0) { ++last_nack; return; }
+      HEADING_DEADBAND_DEG = static_cast<float>(val);
+      EEPROM_WriteGuidanceCfg();
     } else {
       ++last_nack;
       return;
@@ -1905,6 +1968,16 @@ void HandleCommand(const String &rx) {
     }
     target_location = {lat, lon};
 
+    /* ========== ARM ========== */
+  } else if (strcmp(p2, "ARM") == 0) {
+    data.armed[0] = 'A';
+    data.armed[1] = '\0';
+
+    /* ========== DISARM ========== */
+  } else if (strcmp(p2, "DISARM") == 0) {
+    data.armed[0] = 'X';
+    data.armed[1] = '\0';
+
     /* ========== STATE ========== */
   } else if (strcmp(p2, "STATE") == 0) {
     if (!p3) {
@@ -1936,7 +2009,7 @@ void HandleCommand(const String &rx) {
 
     /* ========== SLEEP ========== */
   } else if (strcmp(p2, "SLEEP") == 0) {
-    
+
     led.setPixelColor(0, led.Color(0, 0, 255));
     led.setPixelColor(1, led.Color(0, 0, 255));
     led.show();
@@ -1957,8 +2030,38 @@ void HandleCommand(const String &rx) {
     if (pvalid.sd) {
       mtx_sdio.exec([&]() { fs_sd.close_one(); });
     }
+    EEPROM_Write();
     delay(100);
     __NVIC_SystemReset();
+
+    /* ========== EEPROM ========== */
+  } else if (strcmp(p2, "EEPROM") == 0) {
+    if (!p3 || strcmp(p3, "READ") != 0) {
+      ++last_nack;
+      return;
+    }
+    EEPROMStore s{};
+    memcpy(&s, reinterpret_cast<const void *>(BKPSRAM_BASE), sizeof(s));
+    Serial.println("[EEPROM] --- BKPSRAM dump ---");
+    Serial.printf("  magic        : 0x%08X (%s)\n", s.magic, s.magic == EEPROM_MAGIC ? "VALID" : "INVALID");
+    const uint8_t crc_calc = eeprom_crc8(
+      reinterpret_cast<const uint8_t *>(&s) + EEPROM_PAYLOAD_OFFSET,
+      sizeof(EEPROMStore) - EEPROM_PAYLOAD_OFFSET);
+    Serial.printf("  crc          : stored=0x%02X  calc=0x%02X (%s)\n",
+      s.crc, crc_calc, s.crc == crc_calc ? "OK" : "MISMATCH");
+    Serial.printf("  utc          : %s\n", s.utc);
+    Serial.printf("  packet_count : %lu\n", (unsigned long)s.packet_count);
+    Serial.printf("  state        : %u\n", s.state);
+    Serial.printf("  alt_ref      : %.3f m\n", s.alt_ref);
+    Serial.printf("  pos_a        : %.2f deg\n", s.pos_a);
+    Serial.printf("  pos_b        : %.2f deg\n", s.pos_b);
+    Serial.printf("  servo_angles : [%.3f, %.3f, %.3f] deg\n",
+      s.servo_angles[0], s.servo_angles[1], s.servo_angles[2]);
+    Serial.printf("  at           : %.4f\n", s.bearing_ema_alpha);
+    Serial.printf("  at_ctrl      : %.4f\n", s.ctrl_ema_alpha);
+    Serial.printf("  drift_gain   : %.4f\n", s.drift_correction_gain);
+    Serial.printf("  hdband       : %.2f deg\n", s.heading_deadband_deg);
+    Serial.println("[EEPROM] --- end ---");
 
     /* ========== UNKNOWN ========== */
   } else {
@@ -2068,6 +2171,7 @@ void ConstructString() {
     << data.velocity_n
 
     << data.cmd_echo  // CMD_ECHO
+    << data.armed     // ARM_STATE
 
     << data.heading
 
@@ -2126,6 +2230,7 @@ void ConstructString() {
     << data.siv   // GPS_SATS
 
     << data.cmd_echo  // CMD_ECHO
+    << data.armed     // ARM_STATE
 
     << std::fmod(std::fmod(data.yaw - SPOOL_PHYSICAL_OFFSET, 360.0) + 360.0, 360.0)
     << data.heading_gps

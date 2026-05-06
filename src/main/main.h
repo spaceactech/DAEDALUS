@@ -56,6 +56,7 @@ struct DataMemory {
 
   uint8_t deploy;
   char    cmd_echo[16] = "CXON";
+  char    armed[2]     = "X";
 
   // Freshness flags — set true by each Read*() when new data arrives,
   // cleared by ConstructString() after consuming, mirroring test_i2c pattern.

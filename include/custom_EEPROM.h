@@ -22,6 +22,10 @@ struct EEPROMStore {
   float    pos_a;           // deployment servo A position (deg)
   float    pos_b;           // deployment servo B position (deg)
   double   servo_angles[3]; // paraglider servo target angles (deg)
+  float    bearing_ema_alpha;     // guidance: at
+  float    ctrl_ema_alpha;        // guidance: at_ctrl
+  float    drift_correction_gain; // guidance: DRIFT_CORRECTION_GAIN
+  float    heading_deadband_deg;  // guidance: HEADING_DEADBAND_DEG
 };
 
 static_assert(sizeof(EEPROMStore) <= 4096u, "EEPROMStore exceeds BKPSRAM size");
