@@ -315,7 +315,7 @@ void UserSetupActuator() {
   // Paraglider Servo
   ServoSerial.begin(1'000'000);
   // NVIC_SetPriority(UART7_IRQn, configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY);
-  ServoSerial.setTimeout(5);  // at 1 Mbaud a 4-byte response arrives in ~40 µs; 2 ms is generous without burning CPU
+  ServoSerial.setTimeout(5);  // at 1 Mbaud a 4-byte response arrives in ~40 µs; 5 ms is generous without burning CPU
   controller.driver.hlscl.pSerial = &ServoSerial;
 
   // Initialize servo driver
@@ -1140,7 +1140,6 @@ void setup() {
   UserSetupSD();
   UserSetupGPIO();
   UserSetupUSART();
-  // UserSetupLowPower();  // beware servoserial
   UserSetupActuator();
   UserSetupCDC();
   UserSetupSPI();
@@ -1937,13 +1936,14 @@ void HandleCommand(const String &rx) {
 
     /* ========== SLEEP ========== */
   } else if (strcmp(p2, "SLEEP") == 0) {
-    if (pvalid.sd) {
-      mtx_sdio.exec([&]() { fs_sd.close_one(); });
-    }
+    
     led.setPixelColor(0, led.Color(0, 0, 255));
     led.setPixelColor(1, led.Color(0, 0, 255));
     led.show();
 
+    hal::rtos::delay_ms(100);
+
+    UserSetupLowPower();
     LowPower.deepSleep();
 
     if (pvalid.sd) {
@@ -1954,6 +1954,9 @@ void HandleCommand(const String &rx) {
     /* ========== RESET ========== */
   } else if (strcmp(p2, "RESET") == 0) {
 
+    if (pvalid.sd) {
+      mtx_sdio.exec([&]() { fs_sd.close_one(); });
+    }
     delay(100);
     __NVIC_SystemReset();
 
@@ -2040,9 +2043,9 @@ void ConstructString() {
     // 7–11
     << data.altimeter[0].temperature   // TEMPERATURE (°C, 0.1)
     << data.altimeter[0].pressure_hpa  // PRESSURE (kPa, 0.1)
-    << data.altimeter[0].altitude_m   // TEMPERATURE 
-    << data.batt_volt  // VOLTAGE (V, 0.1)
-    << data.batt_curr  // CURRENT (A, 0.01)
+    << data.altimeter[0].altitude_m    // TEMPERATURE
+    << data.batt_volt                  // VOLTAGE (V, 0.1)
+    << data.batt_curr                  // CURRENT (A, 0.01)
 
     // 12–14 Gyro
     << data.imu[0].gyr_x  // GYRO_R

@@ -108,8 +108,8 @@ constexpr int RA_SERVO_MIN = 500;                                // us PWM
 constexpr int RA_SERVO_MAX = 2450;                               // us PWM
 constexpr int RA_SERVO_CEN = (RA_SERVO_MIN + RA_SERVO_MAX) / 2;  // us PWM
 
-constexpr float RA_SERVO_A_RELEASE = 135;   // deg
-constexpr float RA_SERVO_A_LOCK    = 90;  // deg
+constexpr float RA_SERVO_A_RELEASE = std::min(45 * 1.8, 180.0);   // deg
+constexpr float RA_SERVO_A_LOCK    = std::min(0 * 1.8, 180.0);  // deg
 
 constexpr float RA_SERVO_B_RELEASE = 180;  // deg
 constexpr float RA_SERVO_B_LOCK    = 25;   // deg
