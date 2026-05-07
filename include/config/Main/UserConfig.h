@@ -33,7 +33,7 @@ constexpr double BNO_MOUNT_OFFSET      = 106.6;   // PCB mounting correction (de
 constexpr double SPOOL_PHYSICAL_OFFSET = 45.0;  // For CanSat
 
 // Stack High Water Mark (define to enable per-thread RAM reporting via serial)
-// #define RA_STACK_HWM_ENABLED
+#define RA_STACK_HWM_ENABLED
 
 // Minimum free stack words before a task is flagged with '!' in HWM output
 // (uxTaskGetStackHighWaterMark returns words; 1 word = 4 bytes on ARM Cortex-M)
@@ -46,10 +46,10 @@ constexpr bool RA_RETAIN_DEPLOYMENT_ENABLED = true;
 // When true, EEPROM_Read() restores the last saved state (if magic + CRC valid)
 // and CB_EEPROMWrite runs every RA_EEPROM_WRITE_INTERVAL ms.
 // Set false to disable all EEPROM activity and always start clean.
-constexpr bool RA_EEPROM_ENABLED = true;
+constexpr bool RA_EEPROM_ENABLED = false;
 
 // EEPROM write interval (ms)
-constexpr uint32_t RA_EEPROM_WRITE_INTERVAL = 10000ul;  // 10 s
+constexpr uint32_t RA_EEPROM_WRITE_INTERVAL = 5000ul;   // 5 s
   
 // Auto-Zero Altitude
 constexpr bool RA_AUTO_ZERO_ALT_ENABLED = false;
@@ -111,7 +111,7 @@ constexpr int RA_SERVO_CEN = (RA_SERVO_MIN + RA_SERVO_MAX) / 2;  // us PWM
 constexpr float RA_SERVO_A_RELEASE = std::min(45 * 1.8, 180.0);   // deg
 constexpr float RA_SERVO_A_LOCK    = std::min(0 * 1.8, 180.0);  // deg
 
-constexpr float RA_SERVO_B_RELEASE = 180;  // deg
+constexpr float RA_SERVO_B_RELEASE = 115;  // deg
 constexpr float RA_SERVO_B_LOCK    = 25;   // deg
 
 /* SAMPLER SETTINGS */
@@ -195,7 +195,7 @@ inline uint32_t RA_TIME_TO_MAIN_MIN = RA_TIME_TO_MAIN_NOM * (1.00 - 0.15);  // m
 inline uint32_t RA_TIME_TO_MAIN_MAX = RA_TIME_TO_MAIN_NOM * (1.00 + 0.05);  // ms
 
 // Velocity at Landed State: vel. threshold (LT)
-constexpr double RA_LANDED_ALT = 0.1;  // m/s
+constexpr double RA_LANDED_ALT = 5;  // m/s
 
 // Velocity at Landed State detection period
 constexpr uint32_t RA_LANDED_TON     = 10000ul;  // ms

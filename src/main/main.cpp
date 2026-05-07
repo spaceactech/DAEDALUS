@@ -108,9 +108,9 @@ void EEPROM_Write() {
   memcpy(s.utc, data.utc, sizeof(s.utc));
   s.packet_count = packet_count;
   s.state        = static_cast<uint8_t>(fsm.state());
-  s.alt_ref = alt_ref;
-  s.pos_a   = pos_a;
-  s.pos_b   = pos_b;
+  s.alt_ref      = alt_ref;
+  s.pos_a        = pos_a;
+  s.pos_b        = pos_b;
   for (size_t i = 0; i < 3; ++i)
     s.servo_angles[i] = controller.last_angles[i];
 
@@ -176,7 +176,7 @@ void EEPROM_WriteGuidanceCfg() {
   s.ctrl_ema_alpha        = at_ctrl;
   s.drift_correction_gain = DRIFT_CORRECTION_GAIN;
   s.heading_deadband_deg  = HEADING_DEADBAND_DEG;
-  s.crc = eeprom_crc8(
+  s.crc                   = eeprom_crc8(
     reinterpret_cast<const uint8_t *>(&s) + EEPROM_PAYLOAD_OFFSET,
     sizeof(EEPROMStore) - EEPROM_PAYLOAD_OFFSET);
   memcpy(reinterpret_cast<void *>(BKPSRAM_BASE), &s, sizeof(s));
@@ -304,6 +304,7 @@ struct StackHWM {
   UBaseType_t control   = 0;
   UBaseType_t sdlog     = 0;
   UBaseType_t debug     = 0;
+  UBaseType_t eeprom    = 0;
 } stack_hwm;
 #endif
 /* END USER PRIVATE VARIABLES */
@@ -991,6 +992,7 @@ void CB_DebugLogger(void *) {
         {"CTRL",   stack_hwm.control, 1024}, // 4096 B — commented out
         {  "SD",     stack_hwm.sdlog,  512}, // 2048 B
         { "DBG",     stack_hwm.debug,  512}, // 2048 B
+        {"EEPR",   stack_hwm.eeprom,  512}, // 2048 B
       };
       uint32_t total_used = 0, total_alloc = 0;
       Serial.print("[HWM free/alloc]");
@@ -1126,6 +1128,9 @@ void CB_NeoPixelBlink(void *) {
 
 void CB_EEPROMWrite(void *) {
   hal::rtos::interval_loop(RA_EEPROM_WRITE_INTERVAL, [&]() -> void {
+#ifdef RA_STACK_HWM_ENABLED
+    stack_hwm.eeprom = uxTaskGetStackHighWaterMark(NULL);
+#endif
     EEPROM_Write();
   });
 }
@@ -1157,9 +1162,7 @@ void UserThreads() {
   if (pvalid.sd)
     hal::rtos::scheduler.create(CB_SDLogger, {.name = "CB_SDLogger", .stack_size = 4096, .priority = osPriorityRealtime1});
 
-
-  if (RA_EEPROM_ENABLED)
-    hal::rtos::scheduler.create(CB_EEPROMWrite, {.name = "CB_EEPROMWrite", .stack_size = 2048, .priority = osPriorityLow});
+  hal::rtos::scheduler.create(CB_EEPROMWrite, {.name = "CB_EEPROMWrite", .stack_size = 2048, .priority = osPriorityLow});
 
   hal::rtos::scheduler.create(CB_Transmit, {.name = "CB_Transmit", .stack_size = 2048, .priority = osPriorityNormal});
   hal::rtos::scheduler.create(CB_ReceiveCommand, {.name = "CB_ReceiveCommand", .stack_size = 2048, .priority = osPriorityNormal});
@@ -1224,7 +1227,6 @@ void setup() {
 
   // Restore last flight state from EEPROM (only if data was previously defined)
   if constexpr (RA_EEPROM_ENABLED) {
-    // Zero altitude reference
     EEPROM_Read();
     delay(4000);
     ReadAltimeter(0);
@@ -1298,8 +1300,7 @@ void EvalFSM() {
       }
 
       // sampler.add_sample(acc);                    // Use raw acceleration, unfiltered
-      // sampler.add_sample(filter_acc.kf.state());  // Use filtered acceleration
-      sampler.add_sample(0);            // Closed
+      sampler.add_sample(filter_acc.kf.state());  // Use filtered acceleration
       sampler_sec.add_sample(alt_agl);  // Use filtered alt
 
 
@@ -1848,25 +1849,37 @@ void HandleCommand(const String &rx) {
     } else if (strcmp(p3, "AT") == 0) {
       char        *end;
       const double val = strtod(p4, &end);
-      if (end == p4 || *end != '\0' || val <= 0.0 || val > 1.0) { ++last_nack; return; }
+      if (end == p4 || *end != '\0' || val <= 0.0 || val > 1.0) {
+        ++last_nack;
+        return;
+      }
       at = static_cast<float>(val);
       EEPROM_WriteGuidanceCfg();
     } else if (strcmp(p3, "AT_CTRL") == 0) {
       char        *end;
       const double val = strtod(p4, &end);
-      if (end == p4 || *end != '\0' || val <= 0.0 || val > 1.0) { ++last_nack; return; }
+      if (end == p4 || *end != '\0' || val <= 0.0 || val > 1.0) {
+        ++last_nack;
+        return;
+      }
       at_ctrl = static_cast<float>(val);
       EEPROM_WriteGuidanceCfg();
     } else if (strcmp(p3, "DRIFT_GAIN") == 0) {
       char        *end;
       const double val = strtod(p4, &end);
-      if (end == p4 || *end != '\0' || val < 0.0 || val > 1.0) { ++last_nack; return; }
+      if (end == p4 || *end != '\0' || val < 0.0 || val > 1.0) {
+        ++last_nack;
+        return;
+      }
       DRIFT_CORRECTION_GAIN = static_cast<float>(val);
       EEPROM_WriteGuidanceCfg();
     } else if (strcmp(p3, "HDBAND") == 0) {
       char        *end;
       const double val = strtod(p4, &end);
-      if (end == p4 || *end != '\0' || val < 0.0) { ++last_nack; return; }
+      if (end == p4 || *end != '\0' || val < 0.0) {
+        ++last_nack;
+        return;
+      }
       HEADING_DEADBAND_DEG = static_cast<float>(val);
       EEPROM_WriteGuidanceCfg();
     } else {
@@ -2040,6 +2053,9 @@ void HandleCommand(const String &rx) {
       ++last_nack;
       return;
     }
+    if (RA_EEPROM_ENABLED) {
+      EEPROM_Read();
+    }
     EEPROMStore s{};
     memcpy(&s, reinterpret_cast<const void *>(BKPSRAM_BASE), sizeof(s));
     Serial.println("[EEPROM] --- BKPSRAM dump ---");
@@ -2048,15 +2064,15 @@ void HandleCommand(const String &rx) {
       reinterpret_cast<const uint8_t *>(&s) + EEPROM_PAYLOAD_OFFSET,
       sizeof(EEPROMStore) - EEPROM_PAYLOAD_OFFSET);
     Serial.printf("  crc          : stored=0x%02X  calc=0x%02X (%s)\n",
-      s.crc, crc_calc, s.crc == crc_calc ? "OK" : "MISMATCH");
+                  s.crc, crc_calc, s.crc == crc_calc ? "OK" : "MISMATCH");
     Serial.printf("  utc          : %s\n", s.utc);
-    Serial.printf("  packet_count : %lu\n", (unsigned long)s.packet_count);
+    Serial.printf("  packet_count : %lu\n", (unsigned long) s.packet_count);
     Serial.printf("  state        : %u\n", s.state);
     Serial.printf("  alt_ref      : %.3f m\n", s.alt_ref);
     Serial.printf("  pos_a        : %.2f deg\n", s.pos_a);
     Serial.printf("  pos_b        : %.2f deg\n", s.pos_b);
     Serial.printf("  servo_angles : [%.3f, %.3f, %.3f] deg\n",
-      s.servo_angles[0], s.servo_angles[1], s.servo_angles[2]);
+                  s.servo_angles[0], s.servo_angles[1], s.servo_angles[2]);
     Serial.printf("  at           : %.4f\n", s.bearing_ema_alpha);
     Serial.printf("  at_ctrl      : %.4f\n", s.ctrl_ema_alpha);
     Serial.printf("  drift_gain   : %.4f\n", s.drift_correction_gain);
