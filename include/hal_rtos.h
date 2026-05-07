@@ -52,7 +52,7 @@ namespace hal::rtos {
    * @param n The number of milliseconds to delay.
    */
   __attribute__((always_inline)) inline void delay_ms(const uint32_t n) {
-    osDelay(n);
+    delay(n);
   }
 
   /**

@@ -30,6 +30,7 @@
 #include "Controlling.h"
 #include "custom_EEPROM.h"
 #include "BNO086Cal.h"
+#include "XBeeDriver.h"
 /* END INCLUDE USER'S IMPLEMENTATIONS */
 
 /* BEGIN INCLUDE MAIN */
@@ -46,9 +47,9 @@ XBee           xbee;
 SFE_UBLOX_GNSS    m10s;
 INA236            ina(0x40, &i2c4);
 sh2_SensorValue_t sensorValue;
-SFEVL53L1X        tof(i2c4);
-BNO08x            bno;
-BNO086Calibrator  bno_cal;
+// SFEVL53L1X        tof(i2c4);
+BNO08x           bno;
+BNO086Calibrator bno_cal;
 
 Adafruit_NeoPixel led(2, USER_GPIO_LED, NEO_GRB + NEO_KHZ800);
 
@@ -139,7 +140,8 @@ void EEPROM_Write() {
     sizeof(EEPROMStore) - EEPROM_PAYLOAD_OFFSET);
 
   memcpy(reinterpret_cast<void *>(BKPSRAM_BASE), &s, sizeof(s));
-  __DSB();  // ensure write completes before returning
+  SCB_CleanDCache_by_Addr(reinterpret_cast<uint32_t *>(BKPSRAM_BASE), sizeof(EEPROMStore));
+  __DSB();
 }
 
 // Read only if magic + CRC are valid (data was previously *defined*).
@@ -182,6 +184,7 @@ void EEPROM_WriteGuidanceCfg() {
     reinterpret_cast<const uint8_t *>(&s) + EEPROM_PAYLOAD_OFFSET,
     sizeof(EEPROMStore) - EEPROM_PAYLOAD_OFFSET);
   memcpy(reinterpret_cast<void *>(BKPSRAM_BASE), &s, sizeof(s));
+  SCB_CleanDCache_by_Addr(reinterpret_cast<uint32_t *>(BKPSRAM_BASE), sizeof(EEPROMStore));
   __DSB();
 }
 
@@ -435,7 +438,7 @@ static void RecoverI2C4() {
   UserSetupI2C();
 }
 
-void UserSetupSensor() {
+void UserSetupSensor(bool skip_bno = false) {
   // ── INA236 Battery Monitor (I2C 0x40) ─────────────────────
   Serial.println("\n[SENSOR] INA236 Battery Monitor (I2C 0x40)");
   pvalid.ina = ina.begin();
@@ -448,13 +451,19 @@ void UserSetupSensor() {
   }
 
   // ── BNO08x AHRS (I2C) ─────────────────────────────────────
-  Serial.println("\n[SENSOR] BNO08x AHRS (I2C)");
-  digitalWrite(BNO08X_RESET, 1);
-  pvalid.bno = bno.begin(BNO08X_ADDR, i2c4, USER_GPIO_BNO_INT1, BNO08X_RESET);
-  Serial.print("  Init: ");
-  Serial.println(pvalid.bno ? "OK" : "FAIL");
-  if (pvalid.bno) {
-    bno.enableRotationVector();
+  if (!skip_bno) {
+    Serial.println("\n[SENSOR] BNO08x AHRS (I2C)");
+    digitalWrite(BNO08X_RESET, 1);
+    pvalid.bno = bno.begin(BNO08X_ADDR, i2c4, USER_GPIO_BNO_INT1, BNO08X_RESET);
+    Serial.print("  Init: ");
+    Serial.println(pvalid.bno ? "OK" : "FAIL");
+    if (pvalid.bno) {
+      bno.enableRotationVector();
+    }
+  } else {
+    digitalWrite(BNO08X_RESET, 1);
+    pvalid.bno = true;
+    Serial.println("\n[SENSOR] BNO08x: skipped (wake from sleep)");
   }
 
   // ── u-blox M10S GPS (I2C 0x42) ────────────────────────────
@@ -493,18 +502,18 @@ void UserSetupSensor() {
   }
 
   // ── VL53L1X ToF Distance (I2C 0x29) ──────────────────────
-  Serial.println("\n[SENSOR] VL53L1X ToF Distance (I2C 0x29)");
-  tof.setI2CAddress(0x29);
-  pvalid.tof = (tof.begin() == 0);
-  if (pvalid.tof) {
-    tof.setDistanceModeLong();
-    tof.setROI(4, 4, 50);
-    tof.startTemperatureUpdate();
-    tof.setSigmaThreshold(30);
-    // tof.setDistanceThreshold(300, 65535, 1);  // WINDOW_ABOVE: data-ready only when distance > 500 mm (50 cm)
-  }
-  Serial.print("  Init: ");
-  Serial.println(pvalid.tof ? "OK" : "FAIL");
+  // Serial.println("\n[SENSOR] VL53L1X ToF Distance (I2C 0x29)");
+  // tof.setI2CAddress(0x29);
+  // pvalid.tof = (tof.begin() == 0);
+  // if (pvalid.tof) {
+  //   tof.setDistanceModeLong();
+  //   tof.setROI(4, 4, 50);
+  //   tof.startTemperatureUpdate();
+  //   tof.setSigmaThreshold(30);
+  //   // tof.setDistanceThreshold(300, 65535, 1);  // WINDOW_ABOVE: data-ready only when distance > 500 mm (50 cm)
+  // }
+  // Serial.print("  Init: ");
+  // Serial.println(pvalid.tof ? "OK" : "FAIL");
 }
 
 void UserSetupSD() {
@@ -711,47 +720,47 @@ void CB_ReadINA(void *) {
   });
 }
 
-void CB_ReadTOF(void *) {
-  // ReadTOF() splits its two I2C transactions across a 50 ms gap so the bus
-  // is free while the sensor integrates.  Do NOT wrap it in mtx_i2c.exec()
-  // here — that would deadlock on the non-recursive osMutex.
-  static uint8_t hung_count  = 0;
-  static uint8_t stale_count = 0;
-  hal::rtos::interval_loop(RA_INTERVAL_TOF_READING, [&]() -> void {
-#ifdef RA_STACK_HWM_ENABLED
-    stack_hwm.tof = uxTaskGetStackHighWaterMark(NULL);
-#endif
-    if (!pvalid.tof) return;
+// void CB_ReadTOF(void *) {
+//   // ReadTOF() splits its two I2C transactions across a 50 ms gap so the bus
+//   // is free while the sensor integrates.  Do NOT wrap it in mtx_i2c.exec()
+//   // here — that would deadlock on the non-recursive osMutex.
+//   static uint8_t hung_count  = 0;
+//   static uint8_t stale_count = 0;
+//   hal::rtos::interval_loop(RA_INTERVAL_TOF_READING, [&]() -> void {
+// #ifdef RA_STACK_HWM_ENABLED
+//     stack_hwm.tof = uxTaskGetStackHighWaterMark(NULL);
+// #endif
+//     if (!pvalid.tof) return;
 
-    data.tof_fresh    = false;  // cleared here; set true only on a successful read
-    const uint32_t t0 = millis();
-    ReadTOF();
+//     data.tof_fresh    = false;  // cleared here; set true only on a successful read
+//     const uint32_t t0 = millis();
+//     ReadTOF();
 
-    // Hung-bus detection: normal cycle is ~55 ms; a full hang (both I2C phases
-    // aborting at the 50 ms HAL timeout) takes ~150 ms.  120 ms sits between them.
-    if (millis() - t0 > 120) {
-      if (++hung_count >= 2) {
-        hung_count  = 0;
-        stale_count = 0;
-        mtx_i2c.exec([&]() { RecoverI2C4(); });
-      }
-    } else {
-      hung_count = 0;
-    }
+//     // Hung-bus detection: normal cycle is ~55 ms; a full hang (both I2C phases
+//     // aborting at the 50 ms HAL timeout) takes ~150 ms.  120 ms sits between them.
+//     if (millis() - t0 > 120) {
+//       if (++hung_count >= 2) {
+//         hung_count  = 0;
+//         stale_count = 0;
+//         mtx_i2c.exec([&]() { RecoverI2C4(); });
+//       }
+//     } else {
+//       hung_count = 0;
+//     }
 
-    // Stale-data detection: sensor stopped delivering results
-    if (data.tof_fresh) {
-      stale_count = 0;
-    } else if (++stale_count >= 10) {
-      // 10 consecutive cycles (~1 s) with no fresh data — reinitialise sensor
-      stale_count = 0;
-      mtx_i2c.exec([&]() {
-        tof.stopRanging();
-        pvalid.tof = (tof.begin() == 0);
-      });
-    }
-  });
-}
+//     // Stale-data detection: sensor stopped delivering results
+//     if (data.tof_fresh) {
+//       stale_count = 0;
+//     } else if (++stale_count >= 10) {
+//       // 10 consecutive cycles (~1 s) with no fresh data — reinitialise sensor
+//       stale_count = 0;
+//       mtx_i2c.exec([&]() {
+//         // tof.stopRanging();
+//         pvalid.tof = (tof.begin() == 0);
+//       });
+//     }
+//   });
+// }
 
 void CB_EvalFSM(void *) {
   uint32_t true_interval;
@@ -924,33 +933,34 @@ void CB_ReceiveCommand(void *) {
 #endif
     bool cmd_ready = false;
 
-    // 1. Read one XBee API packet — hold mtx_uart only while touching the XBee object
+    // 1. Drain serial into the AP=2 state machine; process complete frames
     mtx_uart.exec([&]() -> void {
-      xbee.readPacket();
-      if (xbee.getResponse().isAvailable() &&
-          xbee.getResponse().getApiId() == RX_64_RESPONSE) {
-        Rx64Response rx_resp;
-        xbee.getResponse().getRx64Response(rx_resp);
-        uint8_t *payload = rx_resp.getData();
-        uint8_t  plen    = rx_resp.getDataLength();
-        char tmp[MAX_FRAME_DATA_SIZE + 1];
-        uint8_t safe_len = min(plen, (uint8_t)(MAX_FRAME_DATA_SIZE));
-        memcpy(tmp, payload, safe_len);
-        tmp[safe_len] = '\0';
-        rx_message = tmp;
-        rx_message.trim();
-        if (rx_message.length() > 0) cmd_ready = true;
+      while (XbeeSerial.available()) {
+        if (xbFeedByte((uint8_t) XbeeSerial.read())) {
+          if (xb_buf[0] == 0x90 && xb_len >= 12) {
+            // RX Indicator: 1 type + 8 src addr + 2 reserved + 1 options = 12 header bytes
+            uint8_t plen = (uint8_t) (xb_len - 12);
+            char    tmp[256];
+            uint8_t safe = min(plen, (uint8_t) 255);
+            memcpy(tmp, xb_buf + 12, safe);
+            tmp[safe]  = '\0';
+            rx_message = tmp;
+            rx_message.trim();
+            if (rx_message.length() > 0) cmd_ready = true;
+            xbSendAtDB();
+          } else if (xb_buf[0] == 0x88 && xb_len >= 6 &&
+                     xb_buf[2] == 'D' && xb_buf[3] == 'B' && xb_buf[4] == 0x00) {
+            // AT Response for DB: byte 5 is RSSI magnitude, negate for dBm
+            xbee_rssi_dbm = -(int8_t) xb_buf[5];
+          }
+        }
       }
     });
 
-    // Debug: print every raw packet received from XBee before command processing
-    if (rx_message.length() > 0) {
-      mtx_cdc.exec([&]() { Serial.print("[XBee RX] "); Serial.println(rx_message); });
-    }
-
-    // 2. Process Xbee command — outside both mutexes; Serial prints inside mtx_cdc
+    // 2. Process command — outside both mutexes; Serial prints inside mtx_cdc
     if (cmd_ready) {
       mtx_cdc.exec([&]() -> void {
+        Serial.print("[XBee RX] ");
         Serial.println(rx_message);
       });
       HandleCommand(rx_message);
@@ -1015,7 +1025,7 @@ void CB_DebugLogger(void *) {
         {"CTRL",   stack_hwm.control, 1024}, // 4096 B — commented out
         {  "SD",     stack_hwm.sdlog,  512}, // 2048 B
         { "DBG",     stack_hwm.debug,  512}, // 2048 B
-        {"EEPR",   stack_hwm.eeprom,  512}, // 2048 B
+        {"EEPR",    stack_hwm.eeprom,  512}, // 2048 B
       };
       uint32_t total_used = 0, total_alloc = 0;
       Serial.print("[HWM free/alloc]");
@@ -1171,7 +1181,7 @@ void UserThreads() {
   hal::rtos::scheduler.create(CB_ReadMAG, {.name = "CB_ReadMAG", .stack_size = 2048, .priority = osPriorityAboveNormal});
   hal::rtos::scheduler.create(CB_ReadGNSS, {.name = "CB_ReadGNSS", .stack_size = 2048, .priority = osPriorityAboveNormal});
   hal::rtos::scheduler.create(CB_ReadINA, {.name = "CB_ReadINA", .stack_size = 2048, .priority = osPriorityAboveNormal});
-  hal::rtos::scheduler.create(CB_ReadTOF, {.name = "CB_ReadTOF", .stack_size = 2048, .priority = osPriorityAboveNormal});
+  // hal::rtos::scheduler.create(CB_ReadTOF, {.name = "CB_ReadTOF", .stack_size = 2048, .priority = osPriorityAboveNormal});
 
   if constexpr (RA_RETAIN_DEPLOYMENT_ENABLED)
     hal::rtos::scheduler.create(CB_RetainDeployment, {.name = "CB_RetainDeployment", .stack_size = 2048, .priority = osPriorityNormal});
@@ -1197,6 +1207,23 @@ void UserThreads() {
 }
 
 void setup() {
+  EEPROM_Init();
+  bool from_sleep = false;
+  {
+    EEPROMStore s{};
+    memcpy(&s, reinterpret_cast<const void *>(BKPSRAM_BASE), sizeof(s));
+    if (s.magic == EEPROM_MAGIC && s.wake_from_sleep) {
+      from_sleep        = true;
+      s.wake_from_sleep = 0u;
+      s.crc             = eeprom_crc8(
+        reinterpret_cast<const uint8_t *>(&s) + EEPROM_PAYLOAD_OFFSET,
+        sizeof(EEPROMStore) - EEPROM_PAYLOAD_OFFSET);
+      memcpy(reinterpret_cast<void *>(BKPSRAM_BASE), &s, sizeof(s));
+      SCB_CleanDCache_by_Addr(reinterpret_cast<uint32_t *>(BKPSRAM_BASE), sizeof(EEPROMStore));
+      __DSB();
+    }
+  }
+
   sd_buf.reserve(4096);
   tx_buf.reserve(1024);
 
@@ -1208,7 +1235,7 @@ void setup() {
   UserSetupCDC();
   UserSetupSPI();
   UserSetupI2C();
-  UserSetupSensor();
+  UserSetupSensor(from_sleep);
   EEPROM_Init();
   /* END GPIO AND INTERFACES SETUP */
 
@@ -1265,7 +1292,9 @@ void setup() {
   }
 
   bno_cal.init(static_cast<float>(BNO_MOUNT_OFFSET));
-  bno_cal.autoNorthLock(bno);
+  if (!from_sleep) {
+    bno_cal.autoNorthLock(bno);
+  }
 
   led.setPixelColor(0, led.Color(0, 255, 0));
   led.setPixelColor(1, led.Color(0, 255, 0));
@@ -1324,7 +1353,7 @@ void EvalFSM() {
 
       // sampler.add_sample(acc);                    // Use raw acceleration, unfiltered
       sampler.add_sample(filter_acc.kf.state());  // Use filtered acceleration
-      sampler_sec.add_sample(alt_agl);  // Use filtered alt
+      sampler_sec.add_sample(alt_agl);            // Use filtered alt
 
 
       if (data.armed[0] == 'A' &&
@@ -1567,25 +1596,25 @@ void ReadMAG() {
 // bus free, then read the result (brief mutex hold).  VL53L1X is typically
 // ready in ~33 ms, so 50 ms is a safe fixed delay.
 // Sets data.tof_fresh = true only when a measurement was actually received.
-void ReadTOF() {
-  if (!pvalid.tof) return;
+// void ReadTOF() {
+//   if (!pvalid.tof) return;
 
-  // Phase 1: trigger — ~1 ms on the bus
-  mtx_i2c.exec([&]() { tof.startRanging(); });
+//   // Phase 1: trigger — ~1 ms on the bus
+//   mtx_i2c.exec([&]() { tof.startRanging(); });
 
-  // Wait outside the mutex so GPS / BNO / INA can use the bus freely
-  hal::rtos::delay_ms(50);
+//   // Wait outside the mutex so GPS / BNO / INA can use the bus freely
+//   hal::rtos::delay_ms(50);
 
-  // Phase 2: read result — ~3 ms on the bus
-  mtx_i2c.exec([&]() {
-    if (tof.checkForDataReady()) {
-      data.tof       = tof.getDistance() * 0.001f;  // mm → m
-      data.tof_fresh = true;
-      tof.clearInterrupt();  // only clear after a successful read
-    }
-    tof.stopRanging();
-  });
-}
+//   // Phase 2: read result — ~3 ms on the bus
+//   mtx_i2c.exec([&]() {
+//     if (tof.checkForDataReady()) {
+//       data.tof       = tof.getDistance() * 0.001f;  // mm → m
+//       data.tof_fresh = true;
+//       tof.clearInterrupt();  // only clear after a successful read
+//     }
+//     tof.stopRanging();
+//   });
+// }
 
 void ActivateDeployment(const size_t index) {
   switch (index) {
@@ -1757,7 +1786,7 @@ void HandleCommand(const String &rx) {
         ++last_nack;
         return;
       }
-      mtx_i2c.exec([&]() { tof.calibrateOffset(static_cast<uint16_t>(dist_mm)); });
+      // mtx_i2c.exec([&]() { tof.calibrateOffset(static_cast<uint16_t>(dist_mm)); });
     } else if (strcmp(p3, "MAG") == 0) {
       // BNO086 magnetometer calibration sub-commands
       if (!p4) {
@@ -2045,23 +2074,47 @@ void HandleCommand(const String &rx) {
 
     /* ========== SLEEP ========== */
   } else if (strcmp(p2, "SLEEP") == 0) {
+    if (fsm.state() != UserState::LAUNCH_PAD)
+      goto End_OK;
+
+    led.setPixelColor(0, led.Color(255, 0, 255));
+    led.setPixelColor(1, led.Color(255, 0, 255));
+    led.show();
+
+    hal::rtos::delay_ms(5);
+
+    if (pvalid.sd) {
+      mtx_sdio.exec([&]() { fs_sd.close_one(); });
+    }
 
     led.setPixelColor(0, led.Color(0, 0, 255));
     led.setPixelColor(1, led.Color(0, 0, 255));
     led.show();
 
-    hal::rtos::delay_ms(100);
+    {
+      EEPROMStore s{};
+      memcpy(&s, reinterpret_cast<const void *>(BKPSRAM_BASE), sizeof(s));
+      s.magic           = EEPROM_MAGIC;
+      s.wake_from_sleep = 1u;
+      s.crc             = eeprom_crc8(
+        reinterpret_cast<const uint8_t *>(&s) + EEPROM_PAYLOAD_OFFSET,
+        sizeof(EEPROMStore) - EEPROM_PAYLOAD_OFFSET);
+      memcpy(reinterpret_cast<void *>(BKPSRAM_BASE), &s, sizeof(s));
+      SCB_CleanDCache_by_Addr(reinterpret_cast<uint32_t *>(BKPSRAM_BASE), sizeof(EEPROMStore));
+      __DSB();
+    }
 
     UserSetupLowPower();
+
     LowPower.deepSleep();
 
-    if (pvalid.sd) {
-      mtx_sdio.exec([&]() { fs_sd.close_one(); });
-    }
     __NVIC_SystemReset();
 
     /* ========== RESET ========== */
   } else if (strcmp(p2, "RESET") == 0) {
+
+    if (fsm.state() != UserState::LAUNCH_PAD)
+      goto End_OK;
 
     if (pvalid.sd) {
       mtx_sdio.exec([&]() { fs_sd.close_one(); });
@@ -2108,6 +2161,7 @@ void HandleCommand(const String &rx) {
     return;
   }
 
+End_OK:
   ++last_ack;
 }
 

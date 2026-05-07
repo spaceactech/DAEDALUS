@@ -26,9 +26,11 @@ struct EEPROMStore {
   float    ctrl_ema_alpha;        // guidance: at_ctrl
   float    drift_correction_gain; // guidance: DRIFT_CORRECTION_GAIN
   float    heading_deadband_deg;  // guidance: HEADING_DEADBAND_DEG
+  uint8_t  wake_from_sleep;      // set before deepSleep(), cleared on next boot
 };
 
 static_assert(sizeof(EEPROMStore) <= 4096u, "EEPROMStore exceeds BKPSRAM size");
+
 
 // CRC-8 / SMBUS — over payload region (everything after magic + crc)
 static uint8_t eeprom_crc8(const uint8_t *buf, size_t len) {

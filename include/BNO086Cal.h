@@ -213,12 +213,14 @@ public:
 
   // ── reset() ────────────────────────────────────────────────────────────────
   void reset(float default_mount_offset) {
-    _ptr()->magic = 0u;
+    BNO086CalStore *s = _ptr();
+    s->magic = 0u;
+    SCB_CleanDCache_by_Addr(reinterpret_cast<uint32_t *>(BNO_CAL_ADDR), sizeof(BNO086CalStore));
+    __DSB();
     hard_iron[0] = hard_iron[1] = hard_iron[2] = 0.f;
     mount_offset = default_mount_offset;
     state = BNO086CalState::IDLE;
-    Serial.printf("[MAGCAL] Cleared. MountOffset reset to %.2f°\n",
-                  mount_offset);
+    Serial.printf("[MAGCAL] Cleared. MountOffset reset to %.2f°\n", mount_offset);
   }
 
   bool isCollecting()    const { return state == BNO086CalState::MAG_COLLECTING; }
@@ -274,12 +276,13 @@ private:
 
   void _save() {
     BNO086CalStore *s = _ptr();
-    s->magic       = BNO_CAL_MAGIC;
+    s->magic        = BNO_CAL_MAGIC;
     s->hard_iron[0] = hard_iron[0];
     s->hard_iron[1] = hard_iron[1];
     s->hard_iron[2] = hard_iron[2];
     s->mount_offset = mount_offset;
-    __DSB();  // flush write buffer before returning
+    SCB_CleanDCache_by_Addr(reinterpret_cast<uint32_t *>(BNO_CAL_ADDR), sizeof(BNO086CalStore));
+    __DSB();
   }
 
   const char *_stateName() const {
