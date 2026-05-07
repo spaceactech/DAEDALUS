@@ -123,15 +123,13 @@ void EEPROM_Write() {
     EEPROMStore prev{};
     memcpy(&prev, reinterpret_cast<const void *>(BKPSRAM_BASE), sizeof(prev));
     if (prev.magic == EEPROM_MAGIC) {
-      s.bearing_ema_alpha     = prev.bearing_ema_alpha;
-      s.ctrl_ema_alpha        = prev.ctrl_ema_alpha;
-      s.drift_correction_gain = prev.drift_correction_gain;
-      s.heading_deadband_deg  = prev.heading_deadband_deg;
+      s.bearing_ema_alpha    = prev.bearing_ema_alpha;
+      s.ctrl_ema_alpha       = prev.ctrl_ema_alpha;
+      s.heading_deadband_deg = prev.heading_deadband_deg;
     } else {
-      s.bearing_ema_alpha     = at;
-      s.ctrl_ema_alpha        = at_ctrl;
-      s.drift_correction_gain = DRIFT_CORRECTION_GAIN;
-      s.heading_deadband_deg  = HEADING_DEADBAND_DEG;
+      s.bearing_ema_alpha    = at;
+      s.ctrl_ema_alpha       = at_ctrl;
+      s.heading_deadband_deg = HEADING_DEADBAND_DEG;
     }
   }
 
@@ -165,10 +163,9 @@ void EEPROM_Read() {
   pos_b   = s.pos_b;
   for (size_t i = 0; i < 3; ++i)
     controller.last_angles[i] = s.servo_angles[i];
-  at                    = s.bearing_ema_alpha;
-  at_ctrl               = s.ctrl_ema_alpha;
-  DRIFT_CORRECTION_GAIN = s.drift_correction_gain;
-  HEADING_DEADBAND_DEG  = s.heading_deadband_deg;
+  at                   = s.bearing_ema_alpha;
+  at_ctrl              = s.ctrl_ema_alpha;
+  HEADING_DEADBAND_DEG = s.heading_deadband_deg;
 }
 
 // Write guidance config fields only — does a read-modify-write so flight state is untouched.
@@ -176,10 +173,9 @@ void EEPROM_WriteGuidanceCfg() {
   EEPROMStore s{};
   memcpy(&s, reinterpret_cast<const void *>(BKPSRAM_BASE), sizeof(s));
   s.magic                 = EEPROM_MAGIC;
-  s.bearing_ema_alpha     = at;
-  s.ctrl_ema_alpha        = at_ctrl;
-  s.drift_correction_gain = DRIFT_CORRECTION_GAIN;
-  s.heading_deadband_deg  = HEADING_DEADBAND_DEG;
+  s.bearing_ema_alpha    = at;
+  s.ctrl_ema_alpha       = at_ctrl;
+  s.heading_deadband_deg = HEADING_DEADBAND_DEG;
   s.crc                   = eeprom_crc8(
     reinterpret_cast<const uint8_t *>(&s) + EEPROM_PAYLOAD_OFFSET,
     sizeof(EEPROMStore) - EEPROM_PAYLOAD_OFFSET);
@@ -1916,15 +1912,6 @@ void HandleCommand(const String &rx) {
       }
       at_ctrl = static_cast<float>(val);
       EEPROM_WriteGuidanceCfg();
-    } else if (strcmp(p3, "DRIFT_GAIN") == 0) {
-      char        *end;
-      const double val = strtod(p4, &end);
-      if (end == p4 || *end != '\0' || val < 0.0 || val > 1.0) {
-        ++last_nack;
-        return;
-      }
-      DRIFT_CORRECTION_GAIN = static_cast<float>(val);
-      EEPROM_WriteGuidanceCfg();
     } else if (strcmp(p3, "HDBAND") == 0) {
       char        *end;
       const double val = strtod(p4, &end);
@@ -2151,7 +2138,6 @@ void HandleCommand(const String &rx) {
                   s.servo_angles[0], s.servo_angles[1], s.servo_angles[2]);
     Serial.printf("  at           : %.4f\n", s.bearing_ema_alpha);
     Serial.printf("  at_ctrl      : %.4f\n", s.ctrl_ema_alpha);
-    Serial.printf("  drift_gain   : %.4f\n", s.drift_correction_gain);
     Serial.printf("  hdband       : %.2f deg\n", s.heading_deadband_deg);
     Serial.println("[EEPROM] --- end ---");
 

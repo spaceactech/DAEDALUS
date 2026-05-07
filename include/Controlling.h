@@ -41,8 +41,12 @@ inline float at = 0.2f;
 // At 20 Hz: alpha=0.3 -> ~150 ms tau, alpha=0.15 -> ~300 ms tau (paraglider appropriate).
 inline float at_ctrl = 0.3f;
 
-// Drift correction gain — how aggressively to steer against GPS drift (0=none, 1=full reflection)
-inline float DRIFT_CORRECTION_GAIN = 1.0f;
+// Drift PID gains — drives Δθ = (GPS heading − bearing to target) → 0
+// Output is the bearing delta correction added to abs_bearing each guidance cycle.
+constexpr double KP_DRIFT      = 1.0;
+constexpr double KI_DRIFT      = 0.0;
+constexpr double KD_DRIFT      = 0.05;
+constexpr double DRIFT_PID_MAX = 361.0;  // max bearing correction (deg)
 
 // Heading error deadband — suppresses corrections when target bearing is within ±N° of straight ahead.
 // Prevents unnecessary rope pulls that disturb a stable glide for small angular errors.
@@ -287,9 +291,9 @@ struct Guidance {
     // normaliser.  Negative components are clamped to 0 downstream (ropes can only
     // pull).  Continuous at all bearings; no sector boundaries, no chattering.
     numeric_vector<3> out{};
-    out[0] = std::max(0.0,  TWO_INV_SQRT3 * X);
-    out[1] = std::max(0.0, -INV_SQRT3     * X + Y);
-    out[2] = std::max(0.0, -INV_SQRT3     * X - Y);
+    out[0] = std::max(0.0, TWO_INV_SQRT3 * X);
+    out[1] = std::max(0.0, -INV_SQRT3 * X + Y);
+    out[2] = std::max(0.0, -INV_SQRT3 * X - Y);
     return out;
   }
 
@@ -313,10 +317,14 @@ struct Guidance {
 
   // ---- Main guidance update ----
 
+  // Drift PID: drives Δθ = (GPS heading − bearing to target) → 0
+  // Setpoint=0, feedback=Δθ, output=bearing correction delta (deg)
+  xcore::pid_controller_t<uint32_t> drift_pid{KP_DRIFT, KI_DRIFT, KD_DRIFT};
+
   double last_bearing     = 0.0;
-  double last_bearing_raw = 0.0;
+  double last_bearing_calculated = 0.0;
   double last_control[3]  = {};
-  double drift_ema        = 0.0;
+
 
   numeric_vector<3> update(
     const GPSCoordinate &current,
@@ -335,30 +343,19 @@ struct Guidance {
     // Bearing to target in global frame (North-referenced).
     // Magnetometer is always used for body-frame conversion — cables are
     // body-fixed so we need body orientation, not GPS drift direction.
-    double abs_bearing = calculate_bearing(current, target, 0.0);
+    double bearing = calculate_bearing(current, target, 0.0);
 
-    // Wind crab-angle compensation: maintain an EMA of the observed drift
-    // (GPS track vs. target bearing).  This converges to the steady-state wind
-    // drift angle (~1 s time constant at 20 Hz) and holds it as a feed-forward
-    // crab offset.  Using instantaneous drift_error caused the algorithm to
-    // react to GPS heading noise every cycle; the EMA makes it a stable offset.
-    // Flight data showed a consistent -12.8° alignment error (velocity 12.8° west
-    // of bearing) — exactly this wind-induced crab deficit.
-    double corrected_bearing = abs_bearing;
-    if (velocity >= 1.0) {
-      double drift_error = std::fmod(gps_heading - abs_bearing + 540.0, 360.0) - 180.0;
-      if (std::abs(drift_error) < 45.0) {
-        drift_ema = ema_filter(drift_error, drift_ema, 0.05);
-      }
-      corrected_bearing = std::fmod(abs_bearing - drift_ema * DRIFT_CORRECTION_GAIN + 360.0, 360.0);
-    }
+    // Drift PID: Δθ = θ_G − β (GPS heading minus bearing to target, ±180°).
+    // Setpoint = 0; PID output IS the steering angle fed to control allocation.
+    double delta_theta        = std::fmod(gps_heading - bearing + 540.0, 360.0) - 180.0;
+    double corrected_bearing  = std::fmod(drift_pid.update(0.0, delta_theta, 0.05) + 360.0, 360.0);
 
     // Convert global bearing to body frame using magnetometer
     double distance    = calculate_distance(current, target);
-    double bearing_raw = std::fmod(corrected_bearing - theta_offset + 360.0, 360.0);
+    double bearing_calculated = std::fmod(corrected_bearing - theta_offset + 360.0, 360.0);
 
     // EMA smooths bearing to prevent spin oscillations from flipping control sectors.
-    double b_rad       = bearing_raw * DEG_TO_RAD;
+    double b_rad       = bearing_calculated * DEG_TO_RAD;
     bear_sin           = ema_filter(std::sin(b_rad), bear_sin, at);
     bear_cos           = ema_filter(std::cos(b_rad), bear_cos, at);
     double s_bear      = std::atan2(bear_sin, bear_cos) * RAD_TO_DEG;
@@ -367,12 +364,12 @@ struct Guidance {
 
     compute_time_in_air(altitude);
 
-    // Deadband on bearing_raw: only update control when bearing has shifted by more
+    // Deadband on bearing_calculated: only update control when bearing has shifted by more
     // than HEADING_DEADBAND_DEG from the last issued correction.  Suppresses minor
     // oscillations from GPS/EMA noise continuously re-computing commands.
-    double bearing_delta = std::fmod(bearing_raw - last_bearing_raw + 540.0, 360.0) - 180.0;
+    double bearing_delta = std::fmod(bearing_calculated - last_bearing_calculated + 540.0, 360.0) - 180.0;
     if (std::abs(bearing_delta) >= HEADING_DEADBAND_DEG) {
-      last_bearing_raw = bearing_raw;
+      last_bearing_calculated = bearing_calculated;
       auto target_vec  = compute_target_vector(distance, bear_smooth);
       auto control     = compute_control_vector(target_vec);
       for (int i = 0; i < 3; i++) {
@@ -383,7 +380,7 @@ struct Guidance {
       }
     }
 
-numeric_vector<3> control_smoothed{};
+    numeric_vector<3> control_smoothed{};
     for (int i = 0; i < 3; i++) control_smoothed[i] = last_control[i];
 
     return control_to_servo_angle(control_smoothed);
@@ -422,6 +419,8 @@ struct Controller {
       pid.update_limits(-MAX_SERVO_SPEED, MAX_SERVO_SPEED);
       pid.update_dt(0.01);
     }
+    guidance.drift_pid.update_limits(-1.0, DRIFT_PID_MAX);
+    guidance.drift_pid.update_dt(0.05);
   }
 
   // Reset wrong-way accumulator when a new target is commanded for servo idx
