@@ -45,8 +45,8 @@ inline float at_ctrl = 0.3f;
 // Output is the bearing delta correction added to abs_bearing each guidance cycle.
 constexpr double KP_DRIFT      = 1.0;
 constexpr double KI_DRIFT      = 0.0;
-constexpr double KD_DRIFT      = 0.05;
-constexpr double DRIFT_PID_MAX = 361.0;  // max bearing correction (deg)
+constexpr double KD_DRIFT      = 0.1;
+constexpr double DRIFT_PID_MAX = 360.0;  // max bearing correction (deg)
 
 // Heading error deadband — suppresses corrections when target bearing is within ±N° of straight ahead.
 // Prevents unnecessary rope pulls that disturb a stable glide for small angular errors.
@@ -349,6 +349,8 @@ struct Guidance {
     // Setpoint = 0; PID output IS the steering angle fed to control allocation.
     double delta_theta        = std::fmod(gps_heading - bearing + 540.0, 360.0) - 180.0;
     double corrected_bearing  = std::fmod(drift_pid.update(0.0, delta_theta, 0.05) + 360.0, 360.0);
+    Serial.print("[DRIFT] dTheta="); Serial.print(delta_theta, 2);
+    Serial.print(" corrected_bearing="); Serial.println(corrected_bearing, 2);
 
     // Convert global bearing to body frame using magnetometer
     double distance    = calculate_distance(current, target);
