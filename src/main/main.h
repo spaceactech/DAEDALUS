@@ -20,6 +20,9 @@ String   rx_message   = "";
 uint32_t last_ack;
 uint32_t last_nack;
 
+/* XBee last-hop RSSI in dBm (updated after every 0x90 RX frame via ATDB) */
+int8_t xbee_rssi_dbm = 0;
+
 char c;
 
 bool gps_fixed = false;

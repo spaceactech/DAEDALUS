@@ -20,6 +20,7 @@
 #include <INA236.h>
 #include "SparkFun_VL53L1X.h"
 #include <Servo.h>
+#include <XBee.h>
 
 /* BEGIN INCLUDE USER'S IMPLEMENTATIONS */
 #include "config/Main/UserConfig.h"
@@ -39,7 +40,8 @@
 TwoWire i2c4(USER_GPIO_I2C4_SDA, USER_GPIO_I2C4_SCL);
 
 HardwareSerial ServoSerial(USER_GPIO_Half);
-HardwareSerial Xbee(USER_GPIO_XBEE_RX, USER_GPIO_XBEE_TX);
+HardwareSerial XbeeSerial(USER_GPIO_XBEE_RX, USER_GPIO_XBEE_TX);
+XBee           xbee;
 
 SFE_UBLOX_GNSS    m10s;
 INA236            ina(0x40, &i2c4);
@@ -346,7 +348,7 @@ void UserSetupGPIO() {
 
 void UserSetupLowPower() {
   LowPower.begin();
-  LowPower.enableWakeupFrom(&Xbee, []() {});
+  LowPower.enableWakeupFrom(&XbeeSerial, []() {});
 }
 
 void UserSetupActuator() {
@@ -400,7 +402,8 @@ void UserSetupSPI() {
 }
 
 void UserSetupUSART() {
-  Xbee.begin(115200);
+  XbeeSerial.begin(115200);
+  xbee.begin(XbeeSerial);
 }
 
 void UserSetupI2C() {
@@ -849,15 +852,24 @@ void CB_SDLogger(void *) {
 }
 
 void CB_Transmit(void *) {
+  String        snap;
+  uint8_t       xbee_tx_buf[1025];
+  XBeeAddress64 dest(XBEE_DEST_ADDR_MSB, XBEE_DEST_ADDR_LSB);
+  snap.reserve(1024);
+
   hal::rtos::interval_loop(RA_TX_INTERVAL_MS, [&]() -> TickType_t { return RA_TX_INTERVAL_MS; }, [&]() -> void {
 #ifdef RA_STACK_HWM_ENABLED
       stack_hwm.transmit = uxTaskGetStackHighWaterMark(NULL);
 #endif
       if (telemetry_enabled) {
-        static String snap;
-        static const bool _snap_init = (snap.reserve(1024), true);
         mtx_buf.exec([&]() { snap = tx_buf; });
-        mtx_uart.exec([&]() { Xbee.println(snap); });
+        mtx_uart.exec([&]() {
+          size_t  len = min(snap.length(), sizeof(xbee_tx_buf) - 1);
+          memcpy(xbee_tx_buf, snap.c_str(), len);
+          xbee_tx_buf[len] = '\n';
+          Tx64Request tx = Tx64Request(dest, ACK_OPTION, xbee_tx_buf, (uint8_t)(len + 1), DEFAULT_FRAME_ID);
+          xbee.send(tx);
+        });
         packet_count++;
       } });
 }
@@ -912,18 +924,29 @@ void CB_ReceiveCommand(void *) {
 #endif
     bool cmd_ready = false;
 
-    // 1. Read bytes from Xbee — hold mtx_uart only while touching the UART
+    // 1. Read one XBee API packet — hold mtx_uart only while touching the XBee object
     mtx_uart.exec([&]() -> void {
-      while (Xbee.available()) {
-        char c = Xbee.read();
-        if (c == '\n') {
-          rx_message.trim();
-          cmd_ready = true;
-        } else {
-          rx_message += c;
-        }
+      xbee.readPacket();
+      if (xbee.getResponse().isAvailable() &&
+          xbee.getResponse().getApiId() == RX_64_RESPONSE) {
+        Rx64Response rx_resp;
+        xbee.getResponse().getRx64Response(rx_resp);
+        uint8_t *payload = rx_resp.getData();
+        uint8_t  plen    = rx_resp.getDataLength();
+        char tmp[MAX_FRAME_DATA_SIZE + 1];
+        uint8_t safe_len = min(plen, (uint8_t)(MAX_FRAME_DATA_SIZE));
+        memcpy(tmp, payload, safe_len);
+        tmp[safe_len] = '\0';
+        rx_message = tmp;
+        rx_message.trim();
+        if (rx_message.length() > 0) cmd_ready = true;
       }
     });
+
+    // Debug: print every raw packet received from XBee before command processing
+    if (rx_message.length() > 0) {
+      mtx_cdc.exec([&]() { Serial.print("[XBee RX] "); Serial.println(rx_message); });
+    }
 
     // 2. Process Xbee command — outside both mutexes; Serial prints inside mtx_cdc
     if (cmd_ready) {

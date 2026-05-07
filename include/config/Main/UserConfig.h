@@ -25,8 +25,8 @@ constexpr bool RA_LED_ENABLED = false;
 // USB Debug
 constexpr bool RA_USB_DEBUG_ENABLED = true;
 
-constexpr double MAGNETIC_DECLINATION  = 0.0;
-constexpr double BNO_MOUNT_OFFSET      = 106.6;   // PCB mounting correction (degrees)
+constexpr double MAGNETIC_DECLINATION = 0.0;
+constexpr double BNO_MOUNT_OFFSET     = 106.6;  // PCB mounting correction (degrees)
 
 // Spool 1 physical offset from magnetometer reference (degrees)
 // constexpr double SPOOL_PHYSICAL_OFFSET = 0.0;  // For test
@@ -49,8 +49,8 @@ constexpr bool RA_RETAIN_DEPLOYMENT_ENABLED = true;
 constexpr bool RA_EEPROM_ENABLED = false;
 
 // EEPROM write interval (ms)
-constexpr uint32_t RA_EEPROM_WRITE_INTERVAL = 5000ul;   // 5 s
-  
+constexpr uint32_t RA_EEPROM_WRITE_INTERVAL = 5000ul;  // 5 s
+
 // Auto-Zero Altitude
 constexpr bool RA_AUTO_ZERO_ALT_ENABLED = false;
 
@@ -100,16 +100,16 @@ constexpr uint32_t RA_STARTUP_COUNTDOWN         = 0. * 1000ul;
 
 /* ACTUATOR SETTINGS */
 
-constexpr int RA_SERVO_A_MIN = 1000;                                // us PWM
-constexpr int RA_SERVO_A_MAX = 2000;                               // us PWM
+constexpr int RA_SERVO_A_MIN = 1000;                                   // us PWM
+constexpr int RA_SERVO_A_MAX = 2000;                                   // us PWM
 constexpr int RA_SERVO_A_CEN = (RA_SERVO_A_MIN + RA_SERVO_A_MAX) / 2;  // us PWM
 
 constexpr int RA_SERVO_MIN = 500;                                // us PWM
 constexpr int RA_SERVO_MAX = 2450;                               // us PWM
 constexpr int RA_SERVO_CEN = (RA_SERVO_MIN + RA_SERVO_MAX) / 2;  // us PWM
 
-constexpr float RA_SERVO_A_RELEASE = std::min(45 * 1.8, 180.0);   // deg
-constexpr float RA_SERVO_A_LOCK    = std::min(0 * 1.8, 180.0);  // deg
+constexpr float RA_SERVO_A_RELEASE = std::min(45 * 1.8, 180.0);  // deg
+constexpr float RA_SERVO_A_LOCK    = std::min(0 * 1.8, 180.0);   // deg
 
 constexpr float RA_SERVO_B_RELEASE = 115;  // deg
 constexpr float RA_SERVO_B_LOCK    = 25;   // deg
@@ -133,7 +133,7 @@ constexpr uint32_t RA_TIME_TO_APOGEE_MAX = 13.5 * 1000ul;  // ms
 
 // Launch acceleration: acc. threshold (GT)
 constexpr double RA_LAUNCH_ACC = 9.81 * 5.0;  // 9.81 m/s^2 (g)
-constexpr double RA_LAUNCH_ALT = 20.0;         // m
+constexpr double RA_LAUNCH_ALT = 20.0;        // m
 
 // Launch acceleration detection period
 constexpr uint32_t RA_LAUNCH_TON     = 200ul;  // ms
@@ -154,12 +154,12 @@ constexpr double RA_DROGUE_VEL = 14.0;  // m/s
 constexpr double RA_MAIN_VEL   = 5.0;   // m/s
 
 // Main Deployment Event Altitude: altitude threshold (LT)
-constexpr double RA_INS_ALT_RAW  = 2.0;                  // m
+constexpr double RA_INS_ALT_RAW = 2.0;  // m
 
 // INS deployment baro thresholds (runtime-adjustable via SET,INS_TOF / SET,INS_NEAR / SET,INS_CRIT)
 inline double RA_INS_TOF_THRESHOLD  = RA_INS_ALT_RAW;  // m — TOF trigger
 inline double RA_INS_NEAR_THRESHOLD = 1.5;             // m — baro near-ground trigger
-inline double RA_INS_CRIT_THRESHOLD = 2.0;              // m — baro critical trigger
+inline double RA_INS_CRIT_THRESHOLD = 2.0;             // m — baro critical trigger
 
 // Safeguard overspeed threshold to main deployment
 constexpr double RA_MAIN_OVERSPEED_VEL = RA_DROGUE_VEL * 1.5;
@@ -218,6 +218,15 @@ constexpr uint32_t RA_SDLOGGER_INTERVAL_REALTIME = 100ul;   // 10 Hz
 /* TELEMETRY */
 
 inline uint32_t RA_TX_INTERVAL_MS = 1000ul;  // ms — runtime-adjustable via SET,TX_RATE
+
+/* XBEE API */
+
+// Destination 64-bit address split into MSB and LSB.
+// Read these from the remote XBee's SH (serial high) and SL (serial low) AT commands via XCTU.
+// Default: ZigBee coordinator address (0x0000000000000000).
+// Broadcast to all routers/end-devices: MSB=0x00000000, LSB=0x0000FFFF.
+constexpr uint32_t XBEE_DEST_ADDR_MSB = 0x0013A200;
+constexpr uint32_t XBEE_DEST_ADDR_LSB = 0x425B142C;
 
 /* GPS / NAVIGATION */
 
