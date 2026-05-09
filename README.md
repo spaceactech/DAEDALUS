@@ -8,8 +8,8 @@ Embedded flight software for a CanSat (can-sized satellite) running on an **STM3
 
 | Component | Interface | Purpose |
 |---|---|---|
-| STM32H725RG (Cortex-M7) | — | Main MCU, 480 MHz, hardware FPU |
-| ISM330DHCX (ISM6HG256X) | SPI | 6-axis IMU (accel + gyro) |
+| STM32H725RG (Cortex-M7) | — | Main MCU, 550 MHz, hardware FPU |
+| ISM6HG256X | SPI | 6-axis IMU (accel + gyro) |
 | BMP581 | SPI | Barometric altimeter #1 |
 | MS5611 | I2C | Barometric altimeter #2 |
 | BNO086 | I2C | AHRS / magnetometer (rotation vector) |
@@ -91,7 +91,7 @@ STARTUP → IDLE_SAFE → LAUNCH_PAD → ASCENT → APOGEE → DESCENT
 | `APOGEE` | Fixed 1.5 s delay |
 | `DESCENT` | Fixed 1.5 s delay; computes main release altitude as 80% of apogee |
 | `PROBE_RELEASE` | `alt_agl` falls below `RA_MAIN_ALT_COMPENSATED`; activates servo A |
-| `PAYLOAD_RELEASE` | `alt_agl` falls below `RA_LANDED_ALT`; activates paraglider control |
+| `PAYLOAD_RELEASE` | `alt_agl` falls below `RA_LANDED_ALT`; |
 | `LANDED` | Stops Dynamixels, waits 1 min for cameras, then buzzer ON |
 
 All threshold comparisons use a statistical vote (`xcore::sampler_t`) with a configurable over/under ratio to reject transient sensor noise.

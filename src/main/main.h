@@ -8,7 +8,7 @@
 GPSCoordinate target_location = {13.723133359918828, 100.51516142821684};
 
 /* Telemetry control */
-bool telemetry_enabled = true;  // need to false
+bool telemetry_enabled = false;  // need to false
 
 /* Simulation mode */
 bool     simEnabled   = false;

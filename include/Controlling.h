@@ -45,7 +45,7 @@ inline float at_ctrl = 0.3f;
 // Output is the bearing delta correction added to abs_bearing each guidance cycle.
 constexpr double KP_DRIFT      = 1.0;
 constexpr double KI_DRIFT      = 0.0;
-constexpr double KD_DRIFT      = 0.1;
+constexpr double KD_DRIFT      = 0.15;
 constexpr double DRIFT_PID_MAX = 360.0;  // max bearing correction (deg)
 
 // Heading error deadband — suppresses corrections when target bearing is within ±N° of straight ahead.
@@ -321,9 +321,11 @@ struct Guidance {
   // Setpoint=0, feedback=Δθ, output=bearing correction delta (deg)
   xcore::pid_controller_t<uint32_t> drift_pid{KP_DRIFT, KI_DRIFT, KD_DRIFT};
 
-  double last_bearing     = 0.0;
+  double last_bearing_raw       = 0.0;  // bearing to target, global frame, pre-drift-PID
+  double last_corrected_bearing = 0.0;  // bearing after drift PID correction
+  double last_bearing           = 0.0;  // EMA-smoothed bearing in body frame
   double last_bearing_calculated = 0.0;
-  double last_control[3]  = {};
+  double last_control[3]        = {};
 
 
   numeric_vector<3> update(
@@ -344,13 +346,15 @@ struct Guidance {
     // Magnetometer is always used for body-frame conversion — cables are
     // body-fixed so we need body orientation, not GPS drift direction.
     double bearing = calculate_bearing(current, target, 0.0);
+    last_bearing_raw = bearing;
 
     // Drift PID: Δθ = θ_G − β (GPS heading minus bearing to target, ±180°).
     // Setpoint = 0; PID output IS the steering angle fed to control allocation.
     double delta_theta        = std::fmod(gps_heading - bearing + 540.0, 360.0) - 180.0;
     double corrected_bearing  = std::fmod(drift_pid.update(0.0, delta_theta, 0.05) + 360.0, 360.0);
-    Serial.print("[DRIFT] dTheta="); Serial.print(delta_theta, 2);
-    Serial.print(" corrected_bearing="); Serial.println(corrected_bearing, 2);
+    last_corrected_bearing = corrected_bearing;
+    // Serial.print("[DRIFT] dTheta="); Serial.print(delta_theta, 2);
+    // Serial.print(" corrected_bearing="); Serial.println(corrected_bearing, 2);
 
     // Convert global bearing to body frame using magnetometer
     double distance    = calculate_distance(current, target);

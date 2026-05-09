@@ -17,13 +17,13 @@ constexpr size_t RA_NUM_IMU = 1;
 constexpr size_t RA_NUM_ALTIMETER = 2;
 
 // Number of GNSS sensors
-constexpr size_t RA_NUM_GNSS = 0;
+constexpr size_t RA_NUM_GNSS = 0; 
 
 // LEDs
-constexpr bool RA_LED_ENABLED = false;
+constexpr bool RA_LED_ENABLED = true;
 
 // USB Debug
-constexpr bool RA_USB_DEBUG_ENABLED = true;
+constexpr bool RA_USB_DEBUG_ENABLED = false;
 
 constexpr double MAGNETIC_DECLINATION = 0.0;
 constexpr double BNO_MOUNT_OFFSET     = 106.6;  // PCB mounting correction (degrees)
@@ -126,10 +126,10 @@ constexpr double RA_TRUE_TO_FALSE_RATIO = 1.0;  // (#True / #False), 0.5 = 33.3%
 constexpr bool RA_FSM_TIME_GUARD_ENABLED = true;
 
 // Safeguard minimum time to apogee - drogue deployment
-constexpr uint32_t RA_TIME_TO_APOGEE_MIN = 10 * 1000ul;  // ms
+constexpr uint32_t RA_TIME_TO_APOGEE_MIN = 2 * 1000ul;  // ms
 
 // Safeguard maximum time to apogee - drogue deployment
-constexpr uint32_t RA_TIME_TO_APOGEE_MAX = 13.5 * 1000ul;  // ms
+constexpr uint32_t RA_TIME_TO_APOGEE_MAX = 10 * 1000ul;  // ms
 
 // Launch acceleration: acc. threshold (GT)
 constexpr double RA_LAUNCH_ACC = 9.81 * 5.0;  // 9.81 m/s^2 (g)
@@ -179,11 +179,11 @@ constexpr double RA_INS_COMPENSATION_MULT  = 2.0;
 // INS Deployment Event Triggering Delay Compensation Value
 constexpr double RA_INS_ALT_COMPENSATED = RA_INS_ALT_RAW + RA_INS_COMPENSATION_MULT * RA_MAIN_VEL * (static_cast<double>(RA_MAIN_TON) / 1000.);  // m
 
-// Main deployment altitude default (APOGEE state auto-overrides with apogee_raw * 0.8)
-inline double RA_MAIN_ALT_COMPENSATED = 500;  // m — runtime-adjustable via SET,MAIN_ALT
-
 // Main Deployment Event Altitude: altitude threshold (LT)
-constexpr double RA_MAIN_ALT_RAW = 760.0;  // m
+constexpr double RA_MAIN_ALT_RAW = 668.0;  // m
+
+// Main deployment altitude default (APOGEE state auto-overrides with apogee_raw * 0.8)
+inline double RA_MAIN_ALT_COMPENSATED = RA_MAIN_ALT_RAW * 0.8;  // m — runtime-adjustable via SET,MAIN_ALT
 
 // Safeguard nominal time to main deployment
 inline uint32_t RA_TIME_TO_MAIN_NOM = static_cast<uint32_t>((RA_APOGEE_ALT - RA_MAIN_ALT_RAW) / RA_DROGUE_VEL) * 1000ul;  // ms

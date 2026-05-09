@@ -110,28 +110,11 @@ void EEPROM_Write() {
   s.magic = EEPROM_MAGIC;
   memcpy(s.utc, data.utc, sizeof(s.utc));
   s.packet_count = packet_count;
-  s.state        = static_cast<uint8_t>(fsm.state());
   s.alt_ref      = alt_ref;
   s.pos_a        = pos_a;
   s.pos_b        = pos_b;
   for (size_t i = 0; i < 3; ++i)
     s.servo_angles[i] = controller.last_angles[i];
-
-  // Guidance config is only written by SET commands — preserve whatever is in BKPSRAM.
-  // On first boot (no valid magic) fall back to the in-memory defaults.
-  {
-    EEPROMStore prev{};
-    memcpy(&prev, reinterpret_cast<const void *>(BKPSRAM_BASE), sizeof(prev));
-    if (prev.magic == EEPROM_MAGIC) {
-      s.bearing_ema_alpha    = prev.bearing_ema_alpha;
-      s.ctrl_ema_alpha       = prev.ctrl_ema_alpha;
-      s.heading_deadband_deg = prev.heading_deadband_deg;
-    } else {
-      s.bearing_ema_alpha    = at;
-      s.ctrl_ema_alpha       = at_ctrl;
-      s.heading_deadband_deg = HEADING_DEADBAND_DEG;
-    }
-  }
 
   s.crc = eeprom_crc8(
     reinterpret_cast<const uint8_t *>(&s) + EEPROM_PAYLOAD_OFFSET,
@@ -145,6 +128,17 @@ void EEPROM_Write() {
 // Read only if magic + CRC are valid (data was previously *defined*).
 // If either check fails ("ndef") returns without touching any live variable.
 void EEPROM_Read() {
+  // Flash config is independent of BKPSRAM — restore it unconditionally.
+  // On first boot (sector blank / 0xFF magic) write current defaults so
+  // subsequent reads succeed and the dump shows VALID.
+  FlashConfig fc{};
+  if (FLASH_Config_Read(fc)) {
+    fsm.transfer(static_cast<UserState>(fc.state));
+    at                   = fc.bearing_ema_alpha;
+    at_ctrl              = fc.ctrl_ema_alpha;
+    HEADING_DEADBAND_DEG = fc.heading_deadband_deg;
+  } 
+
   EEPROMStore s{};
   memcpy(&s, reinterpret_cast<const void *>(BKPSRAM_BASE), sizeof(s));
 
@@ -157,31 +151,27 @@ void EEPROM_Read() {
 
   memcpy(data.utc, s.utc, sizeof(data.utc));
   packet_count = s.packet_count;
-  fsm.transfer(static_cast<UserState>(s.state));
   alt_ref = s.alt_ref;
   pos_a   = s.pos_a;
   pos_b   = s.pos_b;
   for (size_t i = 0; i < 3; ++i)
     controller.last_angles[i] = s.servo_angles[i];
-  at                   = s.bearing_ema_alpha;
-  at_ctrl              = s.ctrl_ema_alpha;
-  HEADING_DEADBAND_DEG = s.heading_deadband_deg;
 }
 
-// Write guidance config fields only — does a read-modify-write so flight state is untouched.
+// Write flight state and guidance config to Flash (persists across full power loss).
 void EEPROM_WriteGuidanceCfg() {
-  EEPROMStore s{};
-  memcpy(&s, reinterpret_cast<const void *>(BKPSRAM_BASE), sizeof(s));
-  s.magic                 = EEPROM_MAGIC;
-  s.bearing_ema_alpha    = at;
-  s.ctrl_ema_alpha       = at_ctrl;
-  s.heading_deadband_deg = HEADING_DEADBAND_DEG;
-  s.crc                   = eeprom_crc8(
-    reinterpret_cast<const uint8_t *>(&s) + EEPROM_PAYLOAD_OFFSET,
-    sizeof(EEPROMStore) - EEPROM_PAYLOAD_OFFSET);
-  memcpy(reinterpret_cast<void *>(BKPSRAM_BASE), &s, sizeof(s));
-  SCB_CleanDCache_by_Addr(reinterpret_cast<uint32_t *>(BKPSRAM_BASE), sizeof(EEPROMStore));
-  __DSB();
+  FlashConfig fc{};
+  fc.state                = static_cast<uint8_t>(fsm.state());
+  fc.bearing_ema_alpha    = at;
+  fc.ctrl_ema_alpha       = at_ctrl;
+  fc.heading_deadband_deg = HEADING_DEADBAND_DEG;
+  FLASH_Config_Write(fc);
+}
+
+// FSM transition wrapper — transfers state then immediately persists to Flash.
+static inline void fsm_transfer(UserState next) {
+  fsm.transfer(next);
+  EEPROM_WriteGuidanceCfg();
 }
 
 /* BEGIN SD CARD */
@@ -221,8 +211,8 @@ uint32_t LoggerInterval() {
       return RA_SDLOGGER_INTERVAL_REALTIME;
 
     case UserState::DESCENT:
-    case UserState::PROBE_REALEASE:
-    case UserState::PAYLOAD_REALEASE:
+    case UserState::PROBE_RELEASE:
+    case UserState::PAYLOAD_RELEASE:
       return RA_SDLOGGER_INTERVAL_FAST;
 
     case UserState::LANDED:
@@ -904,7 +894,7 @@ void CB_Control(void *) {
     // simActivated also sims CB_Control: real GPS/IMU nav is replaced by SimNav synthetic state.
 
     // In real flight only run the spool servos during paraglider descent.
-    if (!simActivated && fsm.state() != UserState::PAYLOAD_REALEASE) return;
+    if (!simActivated && fsm.state() != UserState::PAYLOAD_RELEASE) return;
 
     // Smooth yaw through sin/cos EMA to handle 0/360 wrap.  Raw body yaw had
     // 103 deg std in flight, injecting noise into theta_offset at 20 Hz and
@@ -1082,7 +1072,7 @@ void EvalINSDeploy() {
   }
 
   const auto state = fsm.state();
-  if (state != UserState::PAYLOAD_REALEASE && state != UserState::LANDED) return;
+  if (state != UserState::PAYLOAD_RELEASE && state != UserState::LANDED) return;
   if (data.deploy) return;
 
   static double  baro_crit_log[50]{};
@@ -1315,7 +1305,7 @@ void EvalFSM() {
       if constexpr (RA_LED_ENABLED) {
         digitalWrite(USER_GPIO_BUZZER, 0);
       }
-      fsm.transfer(UserState::IDLE_SAFE);
+      fsm_transfer(UserState::IDLE_SAFE);
       break;
     }
 
@@ -1330,7 +1320,7 @@ void EvalFSM() {
 
       if constexpr (RA_STARTUP_COUNTDOWN_ENABLED) {
         if (state_millis_elapsed >= RA_STARTUP_COUNTDOWN)
-          fsm.transfer(UserState::LAUNCH_PAD);
+          fsm_transfer(UserState::LAUNCH_PAD);
       }
       break;
     }
@@ -1357,7 +1347,7 @@ void EvalFSM() {
             sampler.over_by_under<double>() > RA_TRUE_TO_FALSE_RATIO) ||
            (sampler_sec.is_sampled() &&
             sampler_sec.over_by_under<double>() > RA_TRUE_TO_FALSE_RATIO))) {
-        fsm.transfer(UserState::ASCENT);
+        fsm_transfer(UserState::ASCENT);
       }
 
       break;
@@ -1388,10 +1378,10 @@ void EvalFSM() {
             (state_millis_elapsed >= RA_TIME_TO_APOGEE_MIN &&
              sampler.is_sampled() &&
              sampler.over_by_under<double>() > RA_TRUE_TO_FALSE_RATIO))
-          fsm.transfer(UserState::APOGEE);
+          fsm_transfer(UserState::APOGEE);
       } else {
         if (sampler.is_sampled() && sampler.over_by_under<double>() > RA_TRUE_TO_FALSE_RATIO)
-          fsm.transfer(UserState::APOGEE);
+          fsm_transfer(UserState::APOGEE);
       }
       break;
     }
@@ -1399,7 +1389,7 @@ void EvalFSM() {
     case UserState::APOGEE: {
       // <--- Next: always transfer --->
       hal::rtos::delay_ms(1500);
-      fsm.transfer(UserState::DESCENT);
+      fsm_transfer(UserState::DESCENT);
       break;
     }
 
@@ -1407,11 +1397,11 @@ void EvalFSM() {
       // <--- Next: always transfer --->
       hal::rtos::delay_ms(1500);
       RA_MAIN_ALT_COMPENSATED = apogee_raw * 0.8;
-      fsm.transfer(UserState::PROBE_REALEASE);
+      fsm_transfer(UserState::PROBE_RELEASE);
       break;
     }
 
-    case UserState::PROBE_REALEASE: {
+    case UserState::PROBE_RELEASE: {
       // !!!! Next: DETECT Payload altitude !!!!
       if (fsm.on_enter()) {  // Run once
         sampler.reset();
@@ -1431,18 +1421,18 @@ void EvalFSM() {
         const bool cond_min_time = state_millis_elapsed >= RA_TIME_TO_MAIN_MIN;
         if (cond_timeout || (cond_min_time && cond_alt_lower)) {
           ActivateDeployment(0);
-          fsm.transfer(UserState::PAYLOAD_REALEASE);
+          fsm_transfer(UserState::PAYLOAD_RELEASE);
         }
       } else {
         if (cond_alt_lower) {
           ActivateDeployment(0);
-          fsm.transfer(UserState::PAYLOAD_REALEASE);
+          fsm_transfer(UserState::PAYLOAD_RELEASE);
         }
       }
       break;
     }
 
-    case UserState::PAYLOAD_REALEASE: {
+    case UserState::PAYLOAD_RELEASE: {
       // !!!! Next: DETECT landing !!!!
       if (fsm.on_enter()) {  // Run once
         sampler.reset();
@@ -1454,7 +1444,7 @@ void EvalFSM() {
 
       if (sampler.is_sampled() &&
           sampler.under_by_over<double>() > RA_TRUE_TO_FALSE_RATIO) {
-        fsm.transfer(UserState::LANDED);
+        fsm_transfer(UserState::LANDED);
       }
 
       break;
@@ -1990,8 +1980,8 @@ void HandleCommand(const String &rx) {
         ++last_nack;
         return;
       }
-      pos_a = constrain(a, 0.0, 180.0);
-      servo_a.write(pos_a);
+      pos_a = constrain(a, 0.0, 100.0);
+      servo_a.write(pos_a * 1.8);
     } else if (strcmp(p3, "B") == 0) {
       const double b = strtod(p4, &end);
       if (end == p4 || *end != '\0') {
@@ -2047,17 +2037,17 @@ void HandleCommand(const String &rx) {
       target_state = UserState::APOGEE;
     else if (strcmp(p3, "DESCENT") == 0)
       target_state = UserState::DESCENT;
-    else if (strcmp(p3, "PROBE_REALEASE") == 0)
-      target_state = UserState::PROBE_REALEASE;
-    else if (strcmp(p3, "PAYLOAD_REALEASE") == 0)
-      target_state = UserState::PAYLOAD_REALEASE;
+    else if (strcmp(p3, "PROBE_RELEASE") == 0)
+      target_state = UserState::PROBE_RELEASE;
+    else if (strcmp(p3, "PAYLOAD_RELEASE") == 0)
+      target_state = UserState::PAYLOAD_RELEASE;
     else if (strcmp(p3, "LANDED") == 0)
       target_state = UserState::LANDED;
     else {
       ++last_nack;
       return;
     }
-    fsm.transfer(target_state);
+    fsm_transfer(target_state);
 
     /* ========== SLEEP ========== */
   } else if (strcmp(p2, "SLEEP") == 0) {
@@ -2090,6 +2080,7 @@ void HandleCommand(const String &rx) {
       SCB_CleanDCache_by_Addr(reinterpret_cast<uint32_t *>(BKPSRAM_BASE), sizeof(EEPROMStore));
       __DSB();
     }
+    EEPROM_WriteGuidanceCfg();
 
     UserSetupLowPower();
 
@@ -2107,6 +2098,7 @@ void HandleCommand(const String &rx) {
       mtx_sdio.exec([&]() { fs_sd.close_one(); });
     }
     EEPROM_Write();
+    EEPROM_WriteGuidanceCfg();
     delay(100);
     __NVIC_SystemReset();
 
@@ -2130,15 +2122,20 @@ void HandleCommand(const String &rx) {
                   s.crc, crc_calc, s.crc == crc_calc ? "OK" : "MISMATCH");
     Serial.printf("  utc          : %s\n", s.utc);
     Serial.printf("  packet_count : %lu\n", (unsigned long) s.packet_count);
-    Serial.printf("  state        : %u\n", s.state);
     Serial.printf("  alt_ref      : %.3f m\n", s.alt_ref);
     Serial.printf("  pos_a        : %.2f deg\n", s.pos_a);
     Serial.printf("  pos_b        : %.2f deg\n", s.pos_b);
     Serial.printf("  servo_angles : [%.3f, %.3f, %.3f] deg\n",
                   s.servo_angles[0], s.servo_angles[1], s.servo_angles[2]);
-    Serial.printf("  at           : %.4f\n", s.bearing_ema_alpha);
-    Serial.printf("  at_ctrl      : %.4f\n", s.ctrl_ema_alpha);
-    Serial.printf("  hdband       : %.2f deg\n", s.heading_deadband_deg);
+    Serial.println("[EEPROM] --- end ---");
+    FlashConfig fc{};
+    const bool fc_ok = FLASH_Config_Read(fc);
+    Serial.println("[EEPROM] --- Flash config dump ---");
+    Serial.printf("  magic        : 0x%08X (%s)\n", fc.magic, fc_ok ? "VALID" : "INVALID");
+    Serial.printf("  state        : %u\n", fc.state);
+    Serial.printf("  at           : %.4f\n", fc.bearing_ema_alpha);
+    Serial.printf("  at_ctrl      : %.4f\n", fc.ctrl_ema_alpha);
+    Serial.printf("  hdband       : %.2f deg\n", fc.heading_deadband_deg);
     Serial.println("[EEPROM] --- end ---");
 
     /* ========== UNKNOWN ========== */
@@ -2313,7 +2310,8 @@ void ConstructString() {
 
     << std::fmod(std::fmod(data.yaw - SPOOL_PHYSICAL_OFFSET, 360.0) + 360.0, 360.0)
     << data.heading_gps
-    << data.tof
+    << controller.guidance.last_bearing_raw       // BEARING_RAW (deg, global, pre-drift-PID)
+    << controller.guidance.last_corrected_bearing // BEARING_CORRECTED (deg, post-drift-PID)
     << data.velocity_e
     << data.velocity_n
     << data.deploy
@@ -2326,7 +2324,7 @@ void ConstructString() {
     << servo_target_angles[1]      // SERVO_2_TARGET (deg)
     << controller.last_angles[1]   // SERVO_2_ANGLE (deg)
     << servo_target_angles[2]      // SERVO_3_TARGET (deg)
-    << controller.last_angles[2];  // SERVO_3_ANGLE (deg);  // BEARING (deg)
+    << controller.last_angles[2];  // SERVO_3_ANGLE (deg);  
 
   mtx_buf.exec([&]() {
     sd_buf = local_sd;
