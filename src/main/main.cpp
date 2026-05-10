@@ -1436,7 +1436,6 @@ void EvalFSM() {
       // !!!! Next: DETECT landing !!!!
       if (fsm.on_enter()) {  // Run once
         sampler.reset();
-        sampler.set_capacity(RA_LANDED_SAMPLES, /*recount*/ false);
         sampler.set_threshold(RA_LANDED_ALT, /*recount*/ false);
       }
       //landed
@@ -1846,7 +1845,7 @@ void HandleCommand(const String &rx) {
         ++last_nack;
         return;
       }
-      RA_APOGEE_ALT    = val;
+      RA_APOGEE_VEL    = val;
       apogee_alt_dirty = true;
     } else if (strcmp(p3, "TX_RATE") == 0) {
       char      *end;

@@ -143,7 +143,7 @@ constexpr uint32_t RA_LAUNCH_SAMPLES = RA_LAUNCH_TON / RA_INTERVAL_FSM_EVAL;
 inline double RA_APOGEE_ALT = 850.0;  // m
 
 // Velocity at Apogee: vel. threshold (LT)
-constexpr double RA_APOGEE_VEL = 12.5;  // m/s
+inline double RA_APOGEE_VEL = 5.0;  // m/s
 
 // Velocity at Apogee detection period
 constexpr uint32_t RA_APOGEE_TON     = 500ul;  // ms
@@ -195,7 +195,7 @@ inline uint32_t RA_TIME_TO_MAIN_MIN = RA_TIME_TO_MAIN_NOM * (1.00 - 0.15);  // m
 inline uint32_t RA_TIME_TO_MAIN_MAX = RA_TIME_TO_MAIN_NOM * (1.00 + 0.05);  // ms
 
 // Velocity at Landed State: vel. threshold (LT)
-constexpr double RA_LANDED_ALT = 5;  // m/s
+constexpr double RA_LANDED_ALT = 10;  // m/s
 
 // Velocity at Landed State detection period
 constexpr uint32_t RA_LANDED_TON     = 10000ul;  // ms
