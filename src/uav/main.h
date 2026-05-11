@@ -5,20 +5,23 @@
 #include <math.h>
 #include "Controlling.h"
 
-GPSCoordinate target_location = {12.97269440833672, 101.45673423035804};
+GPSCoordinate target_location = {13.723133359918828, 100.51516142821684};
 
 /* Telemetry control */
-bool telemetry_enabled = true;  // need to false
+bool telemetry_enabled = false;  // need to false
 
 /* Simulation mode */
 bool     simEnabled   = false;
 bool     simActivated = false;
-uint32_t simPressure = 101325u;
-String   rx_message = "";
+uint32_t simPressure  = 101325u;
+String   rx_message   = "";
 
 /* ACK / NACK counters */
 uint32_t last_ack;
 uint32_t last_nack;
+
+/* XBee last-hop RSSI in dBm (updated after every 0x90 RX frame via ATDB) */
+int8_t xbee_rssi_dbm = 0;
 
 char c;
 
@@ -28,8 +31,8 @@ struct DataMemory {
   SensorIMU::Data       imu[RA_NUM_IMU];
   SensorAltimeter::Data altimeter[RA_NUM_ALTIMETER];
 
-  char       mode[4] = "F";
-  
+  char mode[4] = "F";
+
   uint32_t timestamp_epoch;
   uint32_t timestamp_us{};
 
@@ -40,6 +43,7 @@ struct DataMemory {
   double  altitude_msl;
   double  velocity_n;
   double  velocity_e;
+  double  heading_gps;
   uint8_t hh, mm, ss;
 
   float batt_volt;
@@ -47,14 +51,15 @@ struct DataMemory {
 
   float tof;
 
-  float yaw;
-  float pitch;
-  float roll;
-  float heading;
+  float   yaw;
+  float   pitch;
+  float   roll;
+  float   heading;
   uint8_t yaw_accuracy = 0;  // 0=unreliable … 3=high (BNO08x mag calibration)
 
   uint8_t deploy;
-  char cmd_echo[16] = "CXON";
+  char    cmd_echo[16] = "CXON";
+  char    armed[2]     = "X";
 
   // Freshness flags — set true by each Read*() when new data arrives,
   // cleared by ConstructString() after consuming, mirroring test_i2c pattern.

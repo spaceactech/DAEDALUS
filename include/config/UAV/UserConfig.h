@@ -14,19 +14,19 @@ constexpr const char *RA_FILE_EXT = "CSV";
 constexpr size_t RA_NUM_IMU = 1;
 
 // Number of Altimeter sensors
-constexpr size_t RA_NUM_ALTIMETER = 1;
+constexpr size_t RA_NUM_ALTIMETER = 2;
 
 // Number of GNSS sensors
-constexpr size_t RA_NUM_GNSS = 0;
+constexpr size_t RA_NUM_GNSS = 0; 
 
 // LEDs
 constexpr bool RA_LED_ENABLED = true;
 
 // USB Debug
-constexpr bool RA_USB_DEBUG_ENABLED = true;
+constexpr bool RA_USB_DEBUG_ENABLED = false;
 
-constexpr double MAGNETIC_DECLINATION  = 0.0;
-constexpr double BNO_MOUNT_OFFSET      = 0.0;   // PCB mounting correction (degrees)
+constexpr double MAGNETIC_DECLINATION = 0.0;
+constexpr double BNO_MOUNT_OFFSET     = 106.6;  // PCB mounting correction (degrees)
 
 // Spool 1 physical offset from magnetometer reference (degrees)
 // constexpr double SPOOL_PHYSICAL_OFFSET = 0.0;  // For test
@@ -42,15 +42,15 @@ constexpr double SPOOL_PHYSICAL_OFFSET = 45.0;  // For CanSat
 // Retain Deployment
 constexpr bool RA_RETAIN_DEPLOYMENT_ENABLED = true;
 
-// EEPROM Restore on Boot
-// When true, EEPROM_Read() in setup() restores the last saved state if the
-// magic number and CRC are valid (i.e. data was previously defined / written).
-// Set false to always start with a clean slate.
-constexpr bool RA_EEPROM_READ_ENABLED = true;
+// EEPROM feature flag — controls both restore-on-boot and periodic writes.
+// When true, EEPROM_Read() restores the last saved state (if magic + CRC valid)
+// and CB_EEPROMWrite runs every RA_EEPROM_WRITE_INTERVAL ms.
+// Set false to disable all EEPROM activity and always start clean.
+constexpr bool RA_EEPROM_ENABLED = false;
 
 // EEPROM write interval (ms)
-constexpr uint32_t RA_EEPROM_WRITE_INTERVAL = 10000ul;  // 10 s
-  
+constexpr uint32_t RA_EEPROM_WRITE_INTERVAL = 5000ul;  // 5 s
+
 // Auto-Zero Altitude
 constexpr bool RA_AUTO_ZERO_ALT_ENABLED = false;
 
@@ -68,13 +68,13 @@ constexpr uint32_t RA_INTERVAL_ALTIMETER_READING = 50ul;  // ms
 // GNSS Reading
 constexpr uint32_t RA_INTERVAL_GNSS_READING = 100ul;  // ms
 
-// GNSS Reading
+// MAG Reading
 constexpr uint32_t RA_INTERVAL_MAG_READING = 50ul;  // ms
 
-// GNSS Reading
+// TOF Reading
 constexpr uint32_t RA_INTERVAL_TOF_READING = 100ul;  // ms
 
-// GNSS Reading
+// INA Reading
 constexpr uint32_t RA_INTERVAL_INA_READING = 200ul;  // ms
 
 // FSM Evaluation
@@ -86,7 +86,7 @@ constexpr uint32_t RA_JITTER_TOLERANCE_FSM_EVAL = 1ul;  // ms
 // Data Construct
 constexpr uint32_t RA_INTERVAL_CONSTRUCT = 100ul;  // ms
 
-// Data Construct
+// Control Loop
 constexpr uint32_t RA_INTERVAL_Controlling = 50ul;  // ms 20Hz
 
 // Altitude Auto-Zero
@@ -100,14 +100,18 @@ constexpr uint32_t RA_STARTUP_COUNTDOWN         = 0. * 1000ul;
 
 /* ACTUATOR SETTINGS */
 
+constexpr int RA_SERVO_A_MIN = 1000;                                   // us PWM
+constexpr int RA_SERVO_A_MAX = 2000;                                   // us PWM
+constexpr int RA_SERVO_A_CEN = (RA_SERVO_A_MIN + RA_SERVO_A_MAX) / 2;  // us PWM
+
 constexpr int RA_SERVO_MIN = 500;                                // us PWM
 constexpr int RA_SERVO_MAX = 2450;                               // us PWM
 constexpr int RA_SERVO_CEN = (RA_SERVO_MIN + RA_SERVO_MAX) / 2;  // us PWM
 
-constexpr float RA_SERVO_A_RELEASE = 35;   // deg
-constexpr float RA_SERVO_A_LOCK    = 65;  // deg
+constexpr float RA_SERVO_A_RELEASE = 45 * 1.8;  // deg
+constexpr float RA_SERVO_A_LOCK    = 0 * 1.8;   // deg
 
-constexpr float RA_SERVO_B_RELEASE = 180;  // deg
+constexpr float RA_SERVO_B_RELEASE = 115;  // deg
 constexpr float RA_SERVO_B_LOCK    = 25;   // deg
 
 /* SAMPLER SETTINGS */
@@ -145,7 +149,7 @@ constexpr uint32_t RA_LAUNCH_SAMPLES = RA_LAUNCH_TON / RA_INTERVAL_FSM_EVAL;
 inline double RA_APOGEE_ALT = 50.0;  // m
 
 // Velocity at Apogee: vel. threshold (LT)
-constexpr double RA_APOGEE_VEL = 12.5;  // m/s
+inline double RA_APOGEE_VEL = 12.5;  // m/s
 
 // Velocity at Apogee detection period
 constexpr uint32_t RA_APOGEE_TON     = 500ul;  // ms
@@ -182,7 +186,7 @@ constexpr double RA_INS_COMPENSATION_MULT  = 2.0;
 constexpr double RA_INS_ALT_COMPENSATED = RA_INS_ALT_RAW + RA_INS_COMPENSATION_MULT * RA_MAIN_VEL * (static_cast<double>(RA_MAIN_TON) / 1000.);  // m
 
 // Main deployment altitude default (APOGEE state auto-overrides with apogee_raw * 0.8)
-constexpr double RA_MAIN_ALT_COMPENSATED = 40.0;  // m — fallback only
+inline double RA_MAIN_ALT_COMPENSATED = 40.0;  // m — fallback only
 
 // Velocity at Landed State: vel. threshold (LT)
 constexpr double RA_LANDED_ALT = 0.1;  // m/s
@@ -200,9 +204,27 @@ constexpr uint32_t RA_AUTOZERO_SAMPLES = RA_AUTOZERO_TON / RA_INTERVAL_AUTOZERO;
 
 /* SD CARD LOGGER INTERVALS */
 
-constexpr uint32_t RA_SDLOGGER_INTERVAL_IDLE = 1000ul;  // 1 Hz
-constexpr uint32_t RA_SDLOGGER_INTERVAL_SLOW = 200ul;   // 5 Hz
-constexpr uint32_t RA_SDLOGGER_INTERVAL_FAST = 100ul;   // 10 Hz
+constexpr uint32_t RA_SDLOGGER_INTERVAL_IDLE     = 2000ul;  // 0.5 Hz
+constexpr uint32_t RA_SDLOGGER_INTERVAL_SLOW     = 500ul;   // 2 Hz
+constexpr uint32_t RA_SDLOGGER_INTERVAL_FAST     = 200ul;   // 5 Hz
+constexpr uint32_t RA_SDLOGGER_INTERVAL_REALTIME = 100ul;   // 10 Hz
+
+/* TELEMETRY */
+
+inline uint32_t RA_TX_INTERVAL_MS = 1000ul;  // ms — runtime-adjustable via SET,TX_RATE
+
+/* XBEE API */
+
+// Destination 64-bit address split into MSB and LSB.
+// Read these from the remote XBee's SH (serial high) and SL (serial low) AT commands via XCTU.
+// Default: ZigBee coordinator address (0x0000000000000000).
+// Broadcast to all routers/end-devices: MSB=0x00000000, LSB=0x0000FFFF.
+constexpr uint32_t XBEE_DEST_ADDR_MSB = 0x0013A200;
+constexpr uint32_t XBEE_DEST_ADDR_LSB = 0x425B142C;
+
+/* GPS / NAVIGATION */
+
+inline bool RA_USE_KF_GPS = false;  // true=KF-smoothed GPS, false=raw GPS for guidance NEED TO TUNE MUCH ON KF IF USE
 
 // Static assertions validate settings
 namespace details::assertions {
