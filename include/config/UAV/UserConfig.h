@@ -23,7 +23,7 @@ constexpr size_t RA_NUM_GNSS = 0;
 constexpr bool RA_LED_ENABLED = true;
 
 // USB Debug
-constexpr bool RA_USB_DEBUG_ENABLED = false;
+constexpr bool RA_USB_DEBUG_ENABLED = true;
 
 constexpr double MAGNETIC_DECLINATION = 0.0;
 constexpr double BNO_MOUNT_OFFSET     = 106.6;  // PCB mounting correction (degrees)

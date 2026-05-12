@@ -336,32 +336,98 @@ void UserSetupGPIO() {
 }
 
 void UserSetupLowPower() {
-  LowPower.begin();
-  LowPower.enableWakeupFrom(&XbeeSerial, []() {});
+  // LowPower.begin();
+  // LowPower.enableWakeupFrom(&XbeeSerial, []() {});
 }
 
 void UserSetupActuator() {
-  controller.init_pid();
-  // Paraglider Servo
-  ServoSerial.begin(1'000'000);
-  // NVIC_SetPriority(UART7_IRQn, configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY);
-  ServoSerial.setTimeout(5);  // at 1 Mbaud a 4-byte response arrives in ~40 µs; 5 ms is generous without burning CPU
-  controller.driver.hlscl.pSerial = &ServoSerial;
+  Serial.begin(460800);
+  delay(1000);
+  Serial.println("[SERVO] init start");
 
-  // Initialize servo driver
-  controller.driver.hlscl.syncReadBegin(sizeof(ServoDriver::IDS), sizeof(controller.driver.rxPacket), 5);
-  for (size_t i = 0; i < sizeof(ServoDriver::IDS); ++i) {
-    controller.driver.hlscl.WheelMode(ServoDriver::IDS[i]);
-    controller.driver.hlscl.EnableTorque(ServoDriver::IDS[i], 1);
+  // controller.init_pid();
+  ServoSerial.begin(1'000'000);
+  ServoSerial.setTimeout(5);
+  controller.driver.sms_sts.pSerial = &ServoSerial;
+  delay(100);
+
+  // Read current MODE; only write EEPROM if not already in wheel mode (EEPROM write causes servo reboot)
+  Serial.println("[SERVO] checking mode + enabling torque...");
+  for (uint8_t i = 0; i < sizeof(ServoDriver::IDS); i++) {
+    uint8_t id   = ServoDriver::IDS[i];
+    int     mode = controller.driver.sms_sts.readByte(id, SMS_STS_MODE);
+    Serial.print("  ID"); Serial.print(id); Serial.print(" MODE="); Serial.print(mode);
+
+    if (mode != 1) {
+      // Torque off → unlock EEPROM → write wheel mode → lock → wait for reboot
+      int r0 = controller.driver.sms_sts.EnableTorque(id, 0);   delay(50);
+      int r1 = controller.driver.sms_sts.unLockEprom(id);        delay(50);
+      int r2 = controller.driver.sms_sts.WheelMode(id);          delay(50);
+      int r3 = controller.driver.sms_sts.LockEprom(id);
+      delay(800);  // servo may reboot after EEPROM lock — long enough for firmware restart
+      Serial.print(" [EEPROM write r0="); Serial.print(r0);
+      Serial.print(" r1="); Serial.print(r1);
+      Serial.print(" r2="); Serial.print(r2);
+      Serial.print(" r3="); Serial.print(r3); Serial.print("]");
+    }
+
+    int r4     = controller.driver.sms_sts.EnableTorque(id, 1);  delay(50);
+    int torque = controller.driver.sms_sts.readByte(id, SMS_STS_TORQUE_ENABLE);
+    int pos    = controller.driver.sms_sts.ReadPos(id);
+    Serial.print(" torqueRet="); Serial.print(r4);
+    Serial.print(" TORQUE_EN="); Serial.print(torque);
+    Serial.print(" pos="); Serial.println(pos);
   }
 
-  // Test
-  for (size_t i = 0; i < 3; ++i) {
-    controller.driver.write_speed(ServoDriver::IDS[i], 500);
-    delay(50);
-    controller.driver.write_speed(ServoDriver::IDS[i], -500);
-    delay(50);
-    controller.driver.write_speed(ServoDriver::IDS[i], 0);
+  // f=fwd  b=bwd  s=stop  p=pos2000  r=readpos  m=mode/torque regs  other=exit
+  Serial.println("[SERVO] f=fwd b=bwd s=stop p=pos2000 r=read m=regs other=exit");
+  while (false) {
+    if (Serial.available()) {
+      char cmd = Serial.read();
+      if (cmd == 'f') {
+        Serial.println("[CMD] forward");
+        for (uint8_t i = 0; i < sizeof(ServoDriver::IDS); i++) {
+          int ret = controller.driver.sms_sts.WriteSpe(ServoDriver::IDS[i], 2500, 50);
+          Serial.print("  ID"); Serial.print(ServoDriver::IDS[i]); Serial.print(" ret="); Serial.println(ret);
+          delay(10000);
+        }
+      } else if (cmd == 'b') {
+        Serial.println("[CMD] backward");
+        for (uint8_t i = 0; i < sizeof(ServoDriver::IDS); i++) {
+          int ret = controller.driver.sms_sts.WriteSpe(ServoDriver::IDS[i], -2500, 50);
+          Serial.print("  ID"); Serial.print(ServoDriver::IDS[i]); Serial.print(" ret="); Serial.println(ret);
+        }
+      } else if (cmd == 's') {
+        Serial.println("[CMD] stop");
+        for (uint8_t i = 0; i < sizeof(ServoDriver::IDS); i++)
+          controller.driver.sms_sts.WriteSpe(ServoDriver::IDS[i], 0, 50);
+      } else if (cmd == 'p') {
+        Serial.println("[CMD] pos mode -> 2000");
+        for (uint8_t i = 0; i < sizeof(ServoDriver::IDS); i++) {
+          int ret = controller.driver.sms_sts.WritePosEx(ServoDriver::IDS[i], 2000, 500, 50);
+          Serial.print("  ID"); Serial.print(ServoDriver::IDS[i]); Serial.print(" ret="); Serial.println(ret);
+        }
+      } else if (cmd == 'r') {
+        for (uint8_t i = 0; i < sizeof(ServoDriver::IDS); i++) {
+          int16_t pos = controller.driver.sms_sts.ReadPos(ServoDriver::IDS[i]);
+          Serial.print("  ID"); Serial.print(ServoDriver::IDS[i]); Serial.print(" pos="); Serial.println(pos);
+        }
+      } else if (cmd == 'm') {
+        Serial.println("[CMD] read MODE + TORQUE_ENABLE");
+        for (uint8_t i = 0; i < sizeof(ServoDriver::IDS); i++) {
+          uint8_t id     = ServoDriver::IDS[i];
+          int     mode   = controller.driver.sms_sts.readByte(id, SMS_STS_MODE);
+          int     torque = controller.driver.sms_sts.readByte(id, SMS_STS_TORQUE_ENABLE);
+          Serial.print("  ID"); Serial.print(id);
+          Serial.print(" MODE="); Serial.print(mode);
+          Serial.print(" TORQUE_EN="); Serial.println(torque);
+        }
+      } else {
+        for (uint8_t i = 0; i < sizeof(ServoDriver::IDS); i++)
+          controller.driver.sms_sts.WriteSpe(ServoDriver::IDS[i], 0, 50);
+        break;
+      }
+    }
   }
 
 
@@ -1193,27 +1259,27 @@ void UserThreads() {
 }
 
 void setup() {
-  EEPROM_Init();
+  // EEPROM_Init();
   bool from_sleep = false;
-  {
-    EEPROMStore s{};
-    memcpy(&s, reinterpret_cast<const void *>(BKPSRAM_BASE), sizeof(s));
-    if (s.magic == EEPROM_MAGIC && s.wake_from_sleep) {
-      from_sleep        = true;
-      s.wake_from_sleep = 0u;
-      s.crc             = eeprom_crc8(
-        reinterpret_cast<const uint8_t *>(&s) + EEPROM_PAYLOAD_OFFSET,
-        sizeof(EEPROMStore) - EEPROM_PAYLOAD_OFFSET);
-      memcpy(reinterpret_cast<void *>(BKPSRAM_BASE), &s, sizeof(s));
-      SCB_CleanDCache_by_Addr(reinterpret_cast<uint32_t *>(BKPSRAM_BASE), sizeof(EEPROMStore));
-      __DSB();
-    }
-  }
+  // {
+  //   EEPROMStore s{};
+  //   memcpy(&s, reinterpret_cast<const void *>(BKPSRAM_BASE), sizeof(s));
+  //   if (s.magic == EEPROM_MAGIC && s.wake_from_sleep) {
+  //     from_sleep        = true;
+  //     s.wake_from_sleep = 0u;
+  //     s.crc             = eeprom_crc8(
+  //       reinterpret_cast<const uint8_t *>(&s) + EEPROM_PAYLOAD_OFFSET,
+  //       sizeof(EEPROMStore) - EEPROM_PAYLOAD_OFFSET);
+  //     memcpy(reinterpret_cast<void *>(BKPSRAM_BASE), &s, sizeof(s));
+  //     SCB_CleanDCache_by_Addr(reinterpret_cast<uint32_t *>(BKPSRAM_BASE), sizeof(EEPROMStore));
+  //     __DSB();
+  //   }
+  // }
 
   sd_buf.reserve(4096);
   tx_buf.reserve(1024);
 
-  /* BEGIN GPIO AND INTERFACES SETUP */
+  // /* BEGIN GPIO AND INTERFACES SETUP */
   UserSetupSD();
   UserSetupGPIO();
   UserSetupUSART();
@@ -1228,13 +1294,13 @@ void setup() {
   /* BEGIN FILTERS SETUP */
   filter_alt.F = vdt.generate_F();
   filter_acc.F = vdt.generate_F();
-  {
-    auto F = vdt.generate_F();
-    F[0][1] /= GPS_R_LAT;
-    F[0][2] /= GPS_R_LAT;
-    filter_nav_n.F = F;
-    filter_nav_e.F = F;  // east starts with equatorial approx; updated on first GPS fix
-  }
+  // {
+  //   auto F = vdt.generate_F();
+  //   F[0][1] /= GPS_R_LAT;
+  //   F[0][2] /= GPS_R_LAT;
+  //   filter_nav_n.F = F;
+  //   filter_nav_e.F = F;  // east starts with equatorial approx; updated on first GPS fix
+  // }
   /* END FILTERS SETUP */
 
   // IMU

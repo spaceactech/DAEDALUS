@@ -18,7 +18,7 @@ using numeric_vector = xcore::numeric_vector<Size>;
 
 constexpr double EARTH_RADIUS_M         = 6371000.0;
 constexpr double MAX_DISTANCE_TO_TARGET = 59.16;
-constexpr double MAX_SERVO_SPEED        = 800.0;
+constexpr double MAX_SERVO_SPEED        = 2800.0;
 
 constexpr double SPOOL_RADIUS = 0.0109;
 
@@ -30,9 +30,9 @@ constexpr double dL_max = 0.298758;  //30 degree
 constexpr double ENC_TO_DEG = 360.0 / 4096.0;  // **Change
 
 // KP reduced from 2.5 and KD raised from 0.15 to damp 478 deg/s peak yaw oscillations
-constexpr double KP = 1.5;
+constexpr double KP = 1.5 * 6.5;
 constexpr double KI = 0.0;
-constexpr double KD = 0.15;
+constexpr double KD = 0.15 * 3.5;
 
 // Bearing EMA alpha — controls force-vector smoothing (sector selection uses raw bearing)
 inline float at = 0.2f;
@@ -113,32 +113,23 @@ struct ServoDriver {
 
   static constexpr uint8_t IDS[3] = {1, 2, 3};
 
-  HLSCL          hlscl;
-  uint8_t        rxPacket[4]  = {};
-  byte           servo_accels = 255;
-  uint16_t       torque       = 500;
+  SMS_STS        sms_sts;
+  byte           servo_accels = 50;
   EncoderTracker encoder_trackers[3]{};
 
   // ---- Read multi-turn angle for servo at index ----
 
   double read_angle(size_t index) {
-    hlscl.syncReadPacketTx(const_cast<uint8_t *>(&IDS[index]), 1, SMS_STS_PRESENT_POSITION_L, sizeof(rxPacket));
-
-    if (hlscl.syncReadPacketRx(IDS[index], rxPacket) <= 0)
+    int16_t pos = sms_sts.ReadPos(IDS[index]);
+    if (pos < 0)
       return encoder_trackers[index].last_angle;
-
-    int pos = ((rxPacket[1] & 0x0F) << 8) | rxPacket[0];
-    return encoder_trackers[index].update(static_cast<int16_t>(pos));
+    return encoder_trackers[index].update(pos);
   }
 
   // ---- Apply speed to servo (wheel mode) ----
 
   void write_speed(uint8_t id, int16_t speed) {
-    int ack = hlscl.WriteSpe(id, speed, servo_accels, torque);
-    // Serial.print("ACK(");
-    // Serial.print(id);
-    // Serial.print("): ");
-    // Serial.println(ack);
+    sms_sts.WriteSpe(id, speed, servo_accels);
   }
 };
 
