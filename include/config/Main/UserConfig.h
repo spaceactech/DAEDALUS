@@ -23,7 +23,7 @@ constexpr size_t RA_NUM_GNSS = 0;
 constexpr bool RA_LED_ENABLED = true;
 
 // USB Debug
-constexpr bool RA_USB_DEBUG_ENABLED = false;
+constexpr bool RA_USB_DEBUG_ENABLED = true;
 
 constexpr double MAGNETIC_DECLINATION = 0.0;
 constexpr double BNO_MOUNT_OFFSET     = 106.6;  // PCB mounting correction (degrees)
@@ -123,13 +123,16 @@ constexpr double RA_TRUE_TO_FALSE_RATIO = 1.0;  // (#True / #False), 0.5 = 33.3%
 
 // Enable time-based state-transition guards (state_millis_elapsed) in EvalFSM.
 // When false, ASCENT uses velocity detection only; PROBE_REALEASE uses altitude only.
-constexpr bool RA_FSM_TIME_GUARD_ENABLED = true;
+constexpr bool RA_FSM_TIME_GUARD_APOGEE_ENABLED = true;
+constexpr bool RA_FSM_TIME_GUARD_MAIN_ENABLED = false;
+
+// Time to apogee = 11.44
 
 // Safeguard minimum time to apogee - drogue deployment
-constexpr uint32_t RA_TIME_TO_APOGEE_MIN = 2 * 1000ul;  // ms
+constexpr uint32_t RA_TIME_TO_APOGEE_MIN = 10.94 * 1000ul;  // ms
 
 // Safeguard maximum time to apogee - drogue deployment
-constexpr uint32_t RA_TIME_TO_APOGEE_MAX = 10 * 1000ul;  // ms
+constexpr uint32_t RA_TIME_TO_APOGEE_MAX = 11.94 * 1000ul;  // ms
 
 // Launch acceleration: acc. threshold (GT)
 constexpr double RA_LAUNCH_ACC = 9.81 * 5.0;  // 9.81 m/s^2 (g)
@@ -143,7 +146,7 @@ constexpr uint32_t RA_LAUNCH_SAMPLES = RA_LAUNCH_TON / RA_INTERVAL_FSM_EVAL;
 inline double RA_APOGEE_ALT = 850.0;  // m
 
 // Velocity at Apogee: vel. threshold (LT)
-inline double RA_APOGEE_VEL = 5.0;  // m/s
+inline double RA_APOGEE_VEL = 12.5;  // m/s
 
 // Velocity at Apogee detection period
 constexpr uint32_t RA_APOGEE_TON     = 500ul;  // ms
@@ -195,10 +198,10 @@ inline uint32_t RA_TIME_TO_MAIN_MIN = RA_TIME_TO_MAIN_NOM * (1.00 - 0.15);  // m
 inline uint32_t RA_TIME_TO_MAIN_MAX = RA_TIME_TO_MAIN_NOM * (1.00 + 0.05);  // ms
 
 // Velocity at Landed State: vel. threshold (LT)
-constexpr double RA_LANDED_ALT = 10;  // m/s
+constexpr double RA_LANDED_ALT = 1.0;  // m
 
 // Velocity at Landed State detection period
-constexpr uint32_t RA_LANDED_TON     = 10000ul;  // ms
+constexpr uint32_t RA_LANDED_TON     = 20000ul;  // ms
 constexpr uint32_t RA_LANDED_SAMPLES = RA_LANDED_TON / RA_INTERVAL_FSM_EVAL;
 
 // Auto Zero Altitude stillness: vel. threshold (LT)

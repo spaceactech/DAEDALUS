@@ -137,7 +137,7 @@ void EEPROM_Read() {
     at                   = fc.bearing_ema_alpha;
     at_ctrl              = fc.ctrl_ema_alpha;
     HEADING_DEADBAND_DEG = fc.heading_deadband_deg;
-  } 
+  }
 
   EEPROMStore s{};
   memcpy(&s, reinterpret_cast<const void *>(BKPSRAM_BASE), sizeof(s));
@@ -151,9 +151,9 @@ void EEPROM_Read() {
 
   memcpy(data.utc, s.utc, sizeof(data.utc));
   packet_count = s.packet_count;
-  alt_ref = s.alt_ref;
-  pos_a   = s.pos_a;
-  pos_b   = s.pos_b;
+  alt_ref      = s.alt_ref;
+  pos_a        = s.pos_a;
+  pos_b        = s.pos_b;
   for (size_t i = 0; i < 3; ++i)
     controller.last_angles[i] = s.servo_angles[i];
 }
@@ -885,7 +885,7 @@ void CB_Control(void *) {
       snap.yaw      = SimNav::yaw;
       snap.heading  = SimNav::heading;
       snap.fixed    = SimNav::alt > 0.0;
-      mtx_kf.exec([&]() { alt_agl = SimNav::alt; });
+      // alt_agl is owned by CB_ReadAltimeter (from simPressure) — do not overwrite here.
     } else {
       mtx_nav.exec([&]() { snap = nav_state; });
     }
@@ -907,7 +907,9 @@ void CB_Control(void *) {
     double filtered_yaw            = std::atan2(yaw_sin, yaw_cos) * RAD_TO_DEG;
     if (filtered_yaw < 0.0) filtered_yaw += 360.0;
 
-    servo_target_angles = controller.guidance.update(snap.location, target_location, alt_agl, snap.vn, snap.ve, filtered_yaw, snap.heading);
+    double ctrl_alt;
+    mtx_kf.exec([&]() { ctrl_alt = alt_agl; });
+    servo_target_angles = controller.guidance.update(snap.location, target_location, ctrl_alt, snap.vn, snap.ve, filtered_yaw, snap.heading);
     controller.servo_pid_update(servo_target_angles);
   });
 }
@@ -1130,18 +1132,48 @@ void CB_INSDeploy(void *) {
   });
 }
 
-void CB_NeoPixelBlink(void *) {
-  static uint16_t hue = 0;
+uint32_t NeoPixelInterval() {
+  switch (fsm.state()) {
+    case UserState::ASCENT:
+    case UserState::APOGEE:
+    case UserState::DESCENT:
+    case UserState::PROBE_RELEASE:
+    case UserState::PAYLOAD_RELEASE:
+      return 5;
+    case UserState::LANDED:
+      return 10;
+    default:  // STARTUP, IDLE_SAFE, LAUNCH_PAD
+      return 20;
+  }
+}
 
-  hal::rtos::interval_loop(20ul, [&]() -> void {
+void CB_NeoPixelBlink(void *) {
+  static uint16_t       hue = 0;
+  static xcore::FfTimer buzz_timer(700ul, 300ul, millis);
+
+  hal::rtos::interval_loop(5ul, NeoPixelInterval, [&]() -> void {
 #ifdef RA_STACK_HWM_ENABLED
     stack_hwm.neo = uxTaskGetStackHighWaterMark(NULL);
 #endif
+    const auto state = fsm.state();
+
     uint32_t color = led.gamma32(led.ColorHSV(hue));
     led.setPixelColor(0, color);
     led.setPixelColor(1, color);
     led.show();
-    hue += 728;  // full rainbow in ~90 steps (90 × 20 ms = 1.8 s)
+    hue += 182;  // full rainbow in ~90 steps at 20 ms base ≈ 1.8 s
+
+    // Buzzer: 300 ms ON / 700 ms OFF while LANDED
+    if constexpr (RA_LED_ENABLED) {
+      if (state == UserState::LANDED) {
+        buzz_timer
+          .on_rising([]() { digitalWrite(USER_GPIO_BUZZER, 1); })
+          .on_falling([]() { digitalWrite(USER_GPIO_BUZZER, 0); });
+      } else {
+        buzz_timer.reset();
+        digitalWrite(USER_GPIO_BUZZER, 0);
+      }
+    }
   });
 }
 
@@ -1372,15 +1404,15 @@ void EvalFSM() {
       const double vel = filter_alt.kf.state_vector()[1];
       sampler.add_sample(std::abs(vel));
 
-      if constexpr (RA_FSM_TIME_GUARD_ENABLED) {
+      if constexpr (RA_FSM_TIME_GUARD_APOGEE_ENABLED) {
         state_millis_elapsed = millis() - state_millis_start;
         if ((state_millis_elapsed >= RA_TIME_TO_APOGEE_MAX) ||
             (state_millis_elapsed >= RA_TIME_TO_APOGEE_MIN &&
              sampler.is_sampled() &&
-             sampler.over_by_under<double>() > RA_TRUE_TO_FALSE_RATIO))
+             sampler.under_by_over<double>() > RA_TRUE_TO_FALSE_RATIO))
           fsm_transfer(UserState::APOGEE);
       } else {
-        if (sampler.is_sampled() && sampler.over_by_under<double>() > RA_TRUE_TO_FALSE_RATIO)
+        if (sampler.is_sampled() && sampler.under_by_over<double>() > RA_TRUE_TO_FALSE_RATIO)
           fsm_transfer(UserState::APOGEE);
       }
       break;
@@ -1415,7 +1447,7 @@ void EvalFSM() {
       const bool cond_alt_lower = sampler.is_sampled() &&
                                   sampler.under_by_over<double>() > RA_TRUE_TO_FALSE_RATIO;
 
-      if constexpr (false) {
+      if constexpr (RA_FSM_TIME_GUARD_MAIN_ENABLED) {
         state_millis_elapsed     = millis() - state_millis_start;
         const bool cond_timeout  = state_millis_elapsed >= RA_TIME_TO_MAIN_MAX;
         const bool cond_min_time = state_millis_elapsed >= RA_TIME_TO_MAIN_MIN;
@@ -1436,6 +1468,7 @@ void EvalFSM() {
       // !!!! Next: DETECT landing !!!!
       if (fsm.on_enter()) {  // Run once
         sampler.reset();
+        sampler.set_capacity(RA_LANDED_SAMPLES, /*recount*/ false);
         sampler.set_threshold(RA_LANDED_ALT, /*recount*/ false);
       }
       //landed
@@ -2128,7 +2161,7 @@ void HandleCommand(const String &rx) {
                   s.servo_angles[0], s.servo_angles[1], s.servo_angles[2]);
     Serial.println("[EEPROM] --- end ---");
     FlashConfig fc{};
-    const bool fc_ok = FLASH_Config_Read(fc);
+    const bool  fc_ok = FLASH_Config_Read(fc);
     Serial.println("[EEPROM] --- Flash config dump ---");
     Serial.printf("  magic        : 0x%08X (%s)\n", fc.magic, fc_ok ? "VALID" : "INVALID");
     Serial.printf("  state        : %u\n", fc.state);
@@ -2215,13 +2248,17 @@ void ConstructString() {
     << data.mode     // MODE
 
     // 5–6
-    << state_string(fsm.state())  // STATE
-    << alt_agl                    // ALTITUDE (m, 0.1)
+    << alt_agl  // ALTITUDE (m, 0.1)
 
     // 7–11
     << data.altimeter[0].temperature   // TEMPERATURE (°C, 0.1)
     << data.altimeter[0].pressure_hpa  // PRESSURE (kPa, 0.1)
     << data.altimeter[0].altitude_m    // TEMPERATURE
+
+    << data.altimeter[1].temperature   // TEMPERATURE (°C, 0.1)
+    << data.altimeter[1].pressure_hpa  // PRESSURE (kPa, 0.1)
+    << data.altimeter[1].altitude_m    // TEMPERATURE
+    
     << data.batt_volt                  // VOLTAGE (V, 0.1)
     << data.batt_curr                  // CURRENT (A, 0.01)
 
@@ -2244,6 +2281,7 @@ void ConstructString() {
 
     << data.velocity_e
     << data.velocity_n
+    << filter_alt.kf.state_vector()[1]
 
     << data.cmd_echo  // CMD_ECHO
     << data.armed     // ARM_STATE
@@ -2272,6 +2310,7 @@ void ConstructString() {
     << controller.last_angles[2];  // SERVO_3_ANGLE (deg)
 
   csv_stream_lf(local_tx)
+    << filter_alt.kf.state_vector()[1]
     << 1043          // TEAM_ID
     << data.utc      // MISSION_TIME
     << packet_count  // PACKET_COUNT
@@ -2309,8 +2348,8 @@ void ConstructString() {
 
     << std::fmod(std::fmod(data.yaw - SPOOL_PHYSICAL_OFFSET, 360.0) + 360.0, 360.0)
     << data.heading_gps
-    << controller.guidance.last_bearing_raw       // BEARING_RAW (deg, global, pre-drift-PID)
-    << controller.guidance.last_corrected_bearing // BEARING_CORRECTED (deg, post-drift-PID)
+    << controller.guidance.last_bearing_raw        // BEARING_RAW (deg, global, pre-drift-PID)
+    << controller.guidance.last_corrected_bearing  // BEARING_CORRECTED (deg, post-drift-PID)
     << data.velocity_e
     << data.velocity_n
     << data.deploy
@@ -2323,7 +2362,7 @@ void ConstructString() {
     << servo_target_angles[1]      // SERVO_2_TARGET (deg)
     << controller.last_angles[1]   // SERVO_2_ANGLE (deg)
     << servo_target_angles[2]      // SERVO_3_TARGET (deg)
-    << controller.last_angles[2];  // SERVO_3_ANGLE (deg);  
+    << controller.last_angles[2];  // SERVO_3_ANGLE (deg);
 
   mtx_buf.exec([&]() {
     sd_buf = local_sd;

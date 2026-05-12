@@ -25,6 +25,7 @@ HardwareSerial ServoSerial(USER_GPIO_Half);
 // ─── Sensor instances ────────────────────────────────────────
 IMU_ISM256       imu_ism(USER_GPIO_ISM256_NSS);
 Altimeter_BMP581 baro(USER_GPIO_BMP581_NSS);
+Altimeter_MS5611 baro_ms(MS5611_ADDR, i2c4);
 BNO08x           bno;
 INA236           ina(0x40, &i2c4);
 SFEVL53L1X       tof(i2c4);
@@ -48,6 +49,7 @@ struct Results {
   bool bno08x   = false;
   bool ina236   = false;
   bool vl53l1x  = false;
+  bool ms5611   = false;
   bool gps_m10s = false;
   bool servo_a  = false;
   bool servo_b  = false;
@@ -137,6 +139,31 @@ static void testBMP581() {
 
   res.bmp581 = (pass_count >= 3);
   printResult("BMP581", res.bmp581);
+}
+
+static void testMS5611() {
+  Serial.println("\n[SENSOR] MS5611 Altimeter (I2C 0x76)");
+
+  bool init_ok = baro_ms.begin();
+  Serial.print("  Init: ");
+  Serial.println(init_ok ? "OK" : "FAIL");
+
+  if (!init_ok) { printResult("MS5611", false); return; }
+
+  int pass_count = 0;
+  for (int i = 0; i < 5; i++) {
+    delay(10);
+    if (!baro_ms.read()) { Serial.printf("  S%d read error\n", i + 1); continue; }
+
+    double p = baro_ms.pressure_hpa();
+    double t = baro_ms.temperature();
+    Serial.printf("  S%d  P=%.2f hPa  T=%.2f C\n", i + 1, p, t);
+
+    if (p != 0.0 || t != 0.0) pass_count++;
+  }
+
+  res.ms5611 = (pass_count >= 3);
+  printResult("MS5611", res.ms5611);
 }
 
 static void testBNO08x() {
@@ -363,6 +390,7 @@ static void printSummary() {
   Serial.println("\n========== UNIT TEST SUMMARY ==========");
   printResult("ISM6HG256X IMU",  res.ism256);
   printResult("BMP581 Altimeter",res.bmp581);
+  printResult("MS5611 Altimeter",res.ms5611);
   printResult("BNO08x AHRS",     res.bno08x);
   printResult("INA236 Battery",  res.ina236);
   printResult("VL53L1X ToF",     res.vl53l1x);
@@ -375,8 +403,8 @@ static void printSummary() {
   printResult("Buzzer",          res.buzzer);
   printResult("NeoPixel LED",    res.neopixel);
 
-  int total = 13;
-  int passed = (int)res.ism256 + res.bmp581 + res.bno08x + res.ina236 +
+  int total = 14;
+  int passed = (int)res.ism256 + res.bmp581 + res.ms5611 + res.bno08x + res.ina236 +
                res.vl53l1x + res.gps_m10s + res.servo_a + res.servo_b +
                res.hlscl1 + res.hlscl2 + res.hlscl3 + res.buzzer + res.neopixel;
   Serial.printf("  %d / %d passed\n", passed, total);
@@ -431,6 +459,7 @@ void setup() {
   // ── SENSOR TESTS ──────────────────────────────────────
   testISM256();
   testBMP581();
+  testMS5611();
   testBNO08x();
   testINA236();
   testVL53L1X();
