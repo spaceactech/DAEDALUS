@@ -80,6 +80,9 @@ double   alt_ref;  // Altitude at ground
 double   alt_agl;  // Altitude above ground
 double   apogee_raw;
 uint32_t packet_count{};
+
+// 0 = altimeter[0] (BMP581), 1 = altimeter[1] (MS5611), 2 = average of both
+uint8_t altimeter_source = 0;
 /* END PERSISTENT STATE */
 
 /* BEGIN DATA MEMORY */
@@ -578,14 +581,29 @@ void CB_ReadAltimeter(void *) {
     mtx_spi.exec([]() { ReadAltimeter(0); });  // BMP581 — SPI
     mtx_i2c.exec([]() { ReadAltimeter(1); });  // MS5611 — I2C
 
+    const bool ok0 = sensors_health.altimeter[0] == SensorStatus::SENSOR_OK;
+    const bool ok1 = sensors_health.altimeter[1] == SensorStatus::SENSOR_OK;
+    if (altimeter_source == 1 && ok1) {
+      data.altimeter_active = data.altimeter[1];
+    } else if (altimeter_source == 2) {
+      if (ok0 && ok1) {
+        data.altimeter_active.altitude_m   = (data.altimeter[0].altitude_m + data.altimeter[1].altitude_m) * 0.5;
+        data.altimeter_active.pressure_hpa = (data.altimeter[0].pressure_hpa + data.altimeter[1].pressure_hpa) * 0.5;
+        data.altimeter_active.temperature  = (data.altimeter[0].temperature + data.altimeter[1].temperature) * 0.5;
+      } else {
+        data.altimeter_active = ok1 ? data.altimeter[1] : data.altimeter[0];
+      }
+    } else {
+      data.altimeter_active = data.altimeter[0];
+    }
     // Update KF with measurement (real or simulated — altitude_m is already set correctly)
     mtx_kf.exec([&]() {
-      filter_alt.kf.update({data.altimeter[0].altitude_m});
-      if (!simActivated && !simEnabled)
-        alt_agl = data.altimeter[0].altitude_m - alt_ref;
-      if (alt_agl > apogee_raw)
-        apogee_raw = alt_agl;
+      filter_alt.kf.update({data.altimeter_active.altitude_m});
     });
+    if (!simActivated && !simEnabled)
+      alt_agl = data.altimeter_active.altitude_m - alt_ref;
+    if (alt_agl > apogee_raw)
+      apogee_raw = alt_agl;
   });
 }
 
@@ -1943,6 +1961,14 @@ void HandleCommand(const String &rx) {
       }
       HEADING_DEADBAND_DEG = static_cast<float>(val);
       EEPROM_WriteGuidanceCfg();
+    } else if (strcmp(p3, "BARO_SRC") == 0) {
+      char      *end;
+      const long val = strtol(p4, &end, 10);
+      if (end == p4 || *end != '\0' || val < 0 || val > 2) {
+        ++last_nack;
+        return;
+      }
+      altimeter_source = static_cast<uint8_t>(val);
     } else {
       ++last_nack;
       return;
@@ -2217,7 +2243,7 @@ void ConstructString() {
   local_tx = "";
 
   static char _nb[24];
-  snprintf(_nb, sizeof(_nb), "%.1f", (double) data.altimeter[0].altitude_m);
+  snprintf(_nb, sizeof(_nb), "%.1f", data.altimeter_active.altitude_m);
   s_baro_alt = _nb;
   snprintf(_nb, sizeof(_nb), "%.4f", data.latitude);
   s_lat = _nb;
@@ -2225,9 +2251,9 @@ void ConstructString() {
   s_lon = _nb;
   snprintf(_nb, sizeof(_nb), "%.1f", alt_agl);
   s_alt_agl = _nb;
-  snprintf(_nb, sizeof(_nb), "%.1f", (double) data.altimeter[0].temperature);
+  snprintf(_nb, sizeof(_nb), "%.1f", data.altimeter_active.temperature);
   s_temp = _nb;
-  snprintf(_nb, sizeof(_nb), "%.1f", (double) (data.altimeter[0].pressure_hpa / 10.F));
+  snprintf(_nb, sizeof(_nb), "%.1f", data.altimeter_active.pressure_hpa / 10.0);
   s_press = _nb;
   snprintf(_nb, sizeof(_nb), "%.1f", (double) data.batt_volt);
   s_volt = _nb;
@@ -2258,9 +2284,9 @@ void ConstructString() {
     << data.altimeter[1].temperature   // TEMPERATURE (°C, 0.1)
     << data.altimeter[1].pressure_hpa  // PRESSURE (kPa, 0.1)
     << data.altimeter[1].altitude_m    // TEMPERATURE
-    
-    << data.batt_volt                  // VOLTAGE (V, 0.1)
-    << data.batt_curr                  // CURRENT (A, 0.01)
+
+    << data.batt_volt  // VOLTAGE (V, 0.1)
+    << data.batt_curr  // CURRENT (A, 0.01)
 
     // 12–14 Gyro
     << data.imu[0].gyr_x  // GYRO_R

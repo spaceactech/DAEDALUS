@@ -30,6 +30,7 @@ bool gps_fixed = false;
 struct DataMemory {
   SensorIMU::Data       imu[RA_NUM_IMU];
   SensorAltimeter::Data altimeter[RA_NUM_ALTIMETER];
+  SensorAltimeter::Data altimeter_active;  // merged/selected output of altimeter_source
 
   char mode[4] = "F";
 
