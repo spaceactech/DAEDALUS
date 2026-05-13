@@ -1157,7 +1157,7 @@ uint32_t NeoPixelInterval() {
     case UserState::DESCENT:
     case UserState::PROBE_RELEASE:
     case UserState::PAYLOAD_RELEASE:
-      return 5;
+      return 2;
     case UserState::LANDED:
       return 10;
     default:  // STARTUP, IDLE_SAFE, LAUNCH_PAD

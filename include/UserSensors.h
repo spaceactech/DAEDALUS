@@ -107,7 +107,7 @@ class Altimeter_MS5611 final : public SensorAltimeter {
 
 public:
   Altimeter_MS5611(uint8_t address, TwoWire &wire, uint8_t osr_bits = OSR_STANDARD)
-      : SensorAltimeter(), ms5611(address), wire(wire), osr_bits(osr_bits) {}
+      : SensorAltimeter(), ms5611(address, &wire), wire(wire), osr_bits(osr_bits) {}
 
   bool begin() override {
     if (!ms5611.begin()) return false;

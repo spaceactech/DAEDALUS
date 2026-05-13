@@ -36,7 +36,7 @@ constexpr uint32_t USER_GPIO_ISM256_NSS  = PB12;
 constexpr uint32_t USER_GPIO_BNO_INT1 = PC4;
 constexpr uint32_t BNO08X_RESET = PC0;
 #define BNO08X_ADDR   0x4B
-#define MS5611_ADDR   0x76 // 0x77 = CSB high (VCC), 0x76 = CSB low (GND)
+#define MS5611_ADDR   0x77 // 0x77 = CSB high (VCC), 0x76 = CSB low (GND)
 
 constexpr uint32_t M10S_RESET = PH1;
 

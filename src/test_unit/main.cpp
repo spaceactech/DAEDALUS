@@ -5,6 +5,7 @@
 // ============================================================
 
 #include <Arduino.h>
+#include "Arduino_Extended.h"
 #include <SPI.h>
 #include <Servo.h>
 #include <Adafruit_NeoPixel.h>
@@ -77,7 +78,7 @@ static bool waitUserConfirm(uint32_t timeout_ms = 15000) {
   uint32_t t0 = millis();
   while (millis() - t0 < timeout_ms) {
     if (Serial.available()) {
-      char c = (char)Serial.read();
+      char c = (char) Serial.read();
       if (c == 'y' || c == 'Y') return true;
       if (c == 'n' || c == 'N') return false;
     }
@@ -96,12 +97,18 @@ static void testISM256() {
   Serial.print("  Init: ");
   Serial.println(init_ok ? "OK" : "FAIL");
 
-  if (!init_ok) { printResult("ISM6HG256X", false); return; }
+  if (!init_ok) {
+    printResult("ISM6HG256X", false);
+    return;
+  }
 
   int pass_count = 0;
   for (int i = 0; i < 5; i++) {
     delay(10);
-    if (!imu_ism.read()) { Serial.printf("  S%d read error\n", i + 1); continue; }
+    if (!imu_ism.read()) {
+      Serial.printf("  S%d read error\n", i + 1);
+      continue;
+    }
 
     double ax = imu_ism.acc_x(), ay = imu_ism.acc_y(), az = imu_ism.acc_z();
     double gx = imu_ism.gyr_x(), gy = imu_ism.gyr_y(), gz = imu_ism.gyr_z();
@@ -123,12 +130,18 @@ static void testBMP581() {
   Serial.print("  Init: ");
   Serial.println(init_ok ? "OK" : "FAIL");
 
-  if (!init_ok) { printResult("BMP581", false); return; }
+  if (!init_ok) {
+    printResult("BMP581", false);
+    return;
+  }
 
   int pass_count = 0;
   for (int i = 0; i < 5; i++) {
     delay(60);  // 20 Hz ODR → 50 ms period + margin
-    if (!baro.read()) { Serial.printf("  S%d read error\n", i + 1); continue; }
+    if (!baro.read()) {
+      Serial.printf("  S%d read error\n", i + 1);
+      continue;
+    }
 
     double p = baro.pressure_hpa();
     double t = baro.temperature();
@@ -148,12 +161,18 @@ static void testMS5611() {
   Serial.print("  Init: ");
   Serial.println(init_ok ? "OK" : "FAIL");
 
-  if (!init_ok) { printResult("MS5611", false); return; }
+  if (!init_ok) {
+    printResult("MS5611", false);
+    return;
+  }
 
   int pass_count = 0;
   for (int i = 0; i < 5; i++) {
     delay(10);
-    if (!baro_ms.read()) { Serial.printf("  S%d read error\n", i + 1); continue; }
+    if (!baro_ms.read()) {
+      Serial.printf("  S%d read error\n", i + 1);
+      continue;
+    }
 
     double p = baro_ms.pressure_hpa();
     double t = baro_ms.temperature();
@@ -177,7 +196,10 @@ static void testBNO08x() {
   Serial.print("  Init: ");
   Serial.println(init_ok ? "OK" : "FAIL");
 
-  if (!init_ok) { printResult("BNO08x", false); return; }
+  if (!init_ok) {
+    printResult("BNO08x", false);
+    return;
+  }
 
   bno.enableRotationVector();
 
@@ -190,9 +212,9 @@ static void testBNO08x() {
     if (!bno.getSensorEvent()) continue;
     if (bno.getSensorEventID() != SENSOR_REPORTID_ROTATION_VECTOR) continue;
 
-    float roll  = bno.getRoll()  * RAD_TO_DEG;
+    float roll  = bno.getRoll() * RAD_TO_DEG;
     float pitch = bno.getPitch() * RAD_TO_DEG;
-    float yaw   = bno.getYaw()   * RAD_TO_DEG;
+    float yaw   = bno.getYaw() * RAD_TO_DEG;
     pass_count++;
     Serial.printf("  S%d  roll=%.1f  pitch=%.1f  yaw=%.1f\n",
                   pass_count, roll, pitch, yaw);
@@ -214,7 +236,10 @@ static void testINA236() {
   Serial.print("  Init: ");
   Serial.println(init_ok ? "OK" : "FAIL");
 
-  if (!init_ok) { printResult("INA236", false); return; }
+  if (!init_ok) {
+    printResult("INA236", false);
+    return;
+  }
 
   int pass_count = 0;
   for (int i = 0; i < 5; i++) {
@@ -237,7 +262,10 @@ static void testVL53L1X() {
   Serial.print("  Init: ");
   Serial.println(init_ok ? "OK" : "FAIL");
 
-  if (!init_ok) { printResult("VL53L1X", false); return; }
+  if (!init_ok) {
+    printResult("VL53L1X", false);
+    return;
+  }
 
   int pass_count = 0;
   for (int i = 0; i < 5; i++) {
@@ -263,7 +291,10 @@ static void testGPS() {
   Serial.print("  Init: ");
   Serial.println(init_ok ? "OK" : "FAIL");
 
-  if (!init_ok) { printResult("GPS M10S", false); return; }
+  if (!init_ok) {
+    printResult("GPS M10S", false);
+    return;
+  }
 
   gps.setI2COutput(COM_TYPE_UBX, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
   gps.setAutoPVT(true, VAL_LAYER_RAM_BBR, UBLOX_CUSTOM_MAX_WAIT);
@@ -272,9 +303,9 @@ static void testGPS() {
   int pvt_ok = 0;
   for (int i = 0; i < 5; i++) {
     delay(300);
-    bool got = gps.getPVT(UBLOX_CUSTOM_MAX_WAIT);
+    bool    got = gps.getPVT(UBLOX_CUSTOM_MAX_WAIT);
     uint8_t siv = gps.getSIV(UBLOX_CUSTOM_MAX_WAIT);
-    double  lat = gps.getLatitude(UBLOX_CUSTOM_MAX_WAIT)  * 1e-7;
+    double  lat = gps.getLatitude(UBLOX_CUSTOM_MAX_WAIT) * 1e-7;
     double  lon = gps.getLongitude(UBLOX_CUSTOM_MAX_WAIT) * 1e-7;
     Serial.printf("  S%d  PVT=%s  SIV=%u  lat=%.6f  lon=%.6f\n",
                   i + 1, got ? "yes" : "no", siv, lat, lon);
@@ -292,8 +323,10 @@ static void testBuzzer() {
   Serial.println("\n[ACTUATOR] Buzzer (PC15)");
   Serial.println("  3x beeps...");
   for (int i = 0; i < 3; i++) {
-    digitalWrite(USER_GPIO_BUZZER, HIGH); delay(250);
-    digitalWrite(USER_GPIO_BUZZER, LOW);  delay(150);
+    digitalWrite(USER_GPIO_BUZZER, HIGH);
+    delay(250);
+    digitalWrite(USER_GPIO_BUZZER, LOW);
+    delay(150);
   }
   res.buzzer = waitUserConfirm();
   printResult("Buzzer", res.buzzer);
@@ -308,9 +341,13 @@ static void testNeoPixel() {
     led_strip.Color(0, 255, 0),
     led_strip.Color(0, 0, 255),
   };
-  for (uint32_t c : colors) {
-    led_strip.fill(c); led_strip.show(); delay(400);
-    led_strip.clear(); led_strip.show(); delay(100);
+  for (uint32_t c: colors) {
+    led_strip.fill(c);
+    led_strip.show();
+    delay(400);
+    led_strip.clear();
+    led_strip.show();
+    delay(100);
   }
 
   res.neopixel = waitUserConfirm();
@@ -320,10 +357,13 @@ static void testNeoPixel() {
 static void testServoA() {
   Serial.println("\n[ACTUATOR] Servo A (PA3, deployment)");
   servo_a.attach(USER_GPIO_SERVO_A, RA_SERVO_MIN, RA_SERVO_MAX);
-  servo_a.write(0); delay(800);
+  servo_a.write(0);
+  delay(800);
   Serial.println("  Sweeping 0 -> 90 -> 0 deg");
-  servo_a.write(90); delay(1000);
-  servo_a.write(0);  delay(500);
+  servo_a.write(90);
+  delay(1000);
+  servo_a.write(0);
+  delay(500);
   res.servo_a = waitUserConfirm();
   printResult("Servo A", res.servo_a);
 }
@@ -331,10 +371,13 @@ static void testServoA() {
 static void testServoB() {
   Serial.println("\n[ACTUATOR] Servo B (PB9, deployment)");
   servo_b.attach(USER_GPIO_SERVO_B, RA_SERVO_MIN, RA_SERVO_MAX);
-  servo_b.write(0); delay(800);
+  servo_b.write(0);
+  delay(800);
   Serial.println("  Sweeping 0 -> 90 -> 0 deg");
-  servo_b.write(90); delay(1000);
-  servo_b.write(0);  delay(500);
+  servo_b.write(90);
+  delay(1000);
+  servo_b.write(0);
+  delay(500);
   res.servo_b = waitUserConfirm();
   printResult("Servo B", res.servo_b);
 }
@@ -388,23 +431,23 @@ static void testHLSCLServo(uint8_t id, bool &result, const char *label) {
 
 static void printSummary() {
   Serial.println("\n========== UNIT TEST SUMMARY ==========");
-  printResult("ISM6HG256X IMU",  res.ism256);
-  printResult("BMP581 Altimeter",res.bmp581);
-  printResult("MS5611 Altimeter",res.ms5611);
-  printResult("BNO08x AHRS",     res.bno08x);
-  printResult("INA236 Battery",  res.ina236);
-  printResult("VL53L1X ToF",     res.vl53l1x);
-  printResult("GPS M10S",        res.gps_m10s);
-  printResult("Servo A (PA3)",   res.servo_a);
-  printResult("Servo B (PB9)",   res.servo_b);
-  printResult("HLSCL Servo #1",  res.hlscl1);
-  printResult("HLSCL Servo #2",  res.hlscl2);
-  printResult("HLSCL Servo #3",  res.hlscl3);
-  printResult("Buzzer",          res.buzzer);
-  printResult("NeoPixel LED",    res.neopixel);
+  printResult("ISM6HG256X IMU", res.ism256);
+  printResult("BMP581 Altimeter", res.bmp581);
+  printResult("MS5611 Altimeter", res.ms5611);
+  printResult("BNO08x AHRS", res.bno08x);
+  printResult("INA236 Battery", res.ina236);
+  printResult("VL53L1X ToF", res.vl53l1x);
+  printResult("GPS M10S", res.gps_m10s);
+  printResult("Servo A (PA3)", res.servo_a);
+  printResult("Servo B (PB9)", res.servo_b);
+  printResult("HLSCL Servo #1", res.hlscl1);
+  printResult("HLSCL Servo #2", res.hlscl2);
+  printResult("HLSCL Servo #3", res.hlscl3);
+  printResult("Buzzer", res.buzzer);
+  printResult("NeoPixel LED", res.neopixel);
 
-  int total = 14;
-  int passed = (int)res.ism256 + res.bmp581 + res.ms5611 + res.bno08x + res.ina236 +
+  int total  = 14;
+  int passed = (int) res.ism256 + res.bmp581 + res.ms5611 + res.bno08x + res.ina236 +
                res.vl53l1x + res.gps_m10s + res.servo_a + res.servo_b +
                res.hlscl1 + res.hlscl2 + res.hlscl3 + res.buzzer + res.neopixel;
   Serial.printf("  %d / %d passed\n", passed, total);
@@ -428,8 +471,10 @@ void setup() {
 
   // GPS reset sequence
   pinMode(M10S_RESET, OUTPUT);
-  digitalWrite(M10S_RESET, HIGH); delay(20);
-  digitalWrite(M10S_RESET, LOW);  delay(100);
+  digitalWrite(M10S_RESET, HIGH);
+  delay(20);
+  digitalWrite(M10S_RESET, LOW);
+  delay(100);
   digitalWrite(M10S_RESET, HIGH);
 
   // NeoPixel
@@ -464,6 +509,7 @@ void setup() {
   testINA236();
   testVL53L1X();
   testGPS();
+  i2c_detect(Serial, i2c4, 1, 127);
 
   // ── ACTUATOR TESTS ────────────────────────────────────
   testBuzzer();
