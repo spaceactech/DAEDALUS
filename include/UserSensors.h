@@ -117,7 +117,12 @@ public:
   }
 
   bool read() override {
-    return ms5611.read(osr_bits) == MS5611_READ_OK;
+    if (ms5611.read(osr_bits) == MS5611_READ_OK) return true;
+    // I2C bus stuck — reset peripheral and re-read PROM calibration
+    wire.end();
+    wire.begin();
+    ms5611.begin();
+    return false;
   }
 
   double pressure_hpa() override {

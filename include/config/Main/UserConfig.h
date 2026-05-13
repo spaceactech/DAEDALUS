@@ -228,8 +228,11 @@ inline uint32_t RA_TX_INTERVAL_MS = 1000ul;  // ms — runtime-adjustable via SE
 // Read these from the remote XBee's SH (serial high) and SL (serial low) AT commands via XCTU.
 // Default: ZigBee coordinator address (0x0000000000000000).
 // Broadcast to all routers/end-devices: MSB=0x00000000, LSB=0x0000FFFF.
-constexpr uint32_t XBEE_DEST_ADDR_MSB = 0x0013A200;
-constexpr uint32_t XBEE_DEST_ADDR_LSB = 0x425B142C;
+constexpr uint32_t XBEE_DEST_ADDR_MSB  = 0x0013A200;
+constexpr uint32_t XBEE_DEST_ADDR_LSB  = 0x425B142C;
+
+constexpr uint32_t XBEE_DEST_ADDR2_MSB = 0x0013A200;   // TODO: set XBee #2 SH
+constexpr uint32_t XBEE_DEST_ADDR2_LSB = 0x00000000;   // TODO: set XBee #2 SL
 
 /* GPS / NAVIGATION */
 

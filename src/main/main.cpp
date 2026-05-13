@@ -867,24 +867,32 @@ void CB_SDLogger(void *) {
 void CB_Transmit(void *) {
   String        snap;
   uint8_t       xbee_tx_buf[1025];
-  XBeeAddress64 dest(XBEE_DEST_ADDR_MSB, XBEE_DEST_ADDR_LSB);
+  XBeeAddress64 dest1(XBEE_DEST_ADDR_MSB, XBEE_DEST_ADDR_LSB);
+  XBeeAddress64 dest2(XBEE_DEST_ADDR2_MSB, XBEE_DEST_ADDR2_LSB);
   snap.reserve(1024);
 
-  hal::rtos::interval_loop(RA_TX_INTERVAL_MS, [&]() -> TickType_t { return RA_TX_INTERVAL_MS; }, [&]() -> void {
+  auto send_to = [&](XBeeAddress64 &dest) {
+    if (!telemetry_enabled) return;
+    mtx_buf.exec([&]() { snap = tx_buf; });
+    mtx_uart.exec([&]() {
+      size_t len = min(snap.length(), sizeof(xbee_tx_buf) - 1);
+      memcpy(xbee_tx_buf, snap.c_str(), len);
+      xbee_tx_buf[len] = '\n';
+      Tx64Request tx   = Tx64Request(dest, ACK_OPTION, xbee_tx_buf, (uint8_t) (len + 1), DEFAULT_FRAME_ID);
+      xbee.send(tx);
+    });
+  };
+
+  hal::rtos::interval_loop(1, [&]() -> TickType_t { return 1; }, [&]() -> void {
 #ifdef RA_STACK_HWM_ENABLED
-      stack_hwm.transmit = uxTaskGetStackHighWaterMark(NULL);
+    stack_hwm.transmit = uxTaskGetStackHighWaterMark(NULL);
 #endif
-      if (telemetry_enabled) {
-        mtx_buf.exec([&]() { snap = tx_buf; });
-        mtx_uart.exec([&]() {
-          size_t  len = min(snap.length(), sizeof(xbee_tx_buf) - 1);
-          memcpy(xbee_tx_buf, snap.c_str(), len);
-          xbee_tx_buf[len] = '\n';
-          Tx64Request tx = Tx64Request(dest, ACK_OPTION, xbee_tx_buf, (uint8_t)(len + 1), DEFAULT_FRAME_ID);
-          xbee.send(tx);
-        });
-        packet_count++;
-      } });
+    send_to(dest1);
+    hal::rtos::delay_ms(500);
+    send_to(dest2);
+    hal::rtos::delay_ms(500);
+    packet_count++;
+  });
 }
 
 void CB_Control(void *) {
