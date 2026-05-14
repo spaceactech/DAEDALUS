@@ -94,4 +94,6 @@ extern void HandleCommand(const String &rx);
 
 extern void ConstructString();
 
+extern double SampleAltRef();
+
 #endif  //ROCKET_AVIONICS_TEMPLATE_MAIN_H

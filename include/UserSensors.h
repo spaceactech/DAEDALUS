@@ -117,12 +117,18 @@ public:
   }
 
   bool read() override {
-    if (ms5611.read(osr_bits) == MS5611_READ_OK) return true;
-    // I2C bus stuck — reset peripheral and re-read PROM calibration
-    wire.end();
-    wire.begin();
-    ms5611.begin();
-    return false;
+    if (ms5611.read(osr_bits) != MS5611_READ_OK) {
+      // I2C bus stuck — reset peripheral and re-read PROM calibration
+      wire.end();
+      wire.begin();
+      ms5611.begin();
+      return false;
+    }
+    // Reject corrupted ADC reads (e.g. D1=0 or partial byte) that produce
+    // physically impossible pressures outside the 300–1100 hPa flight range.
+    float p = ms5611.getPressure();
+    if (p < 300.0f || p > 1100.0f) return false;
+    return true;
   }
 
   double pressure_hpa() override {

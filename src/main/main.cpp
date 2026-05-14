@@ -320,6 +320,7 @@ void UserSetupGPIO() {
   led.setPixelColor(1, led.Color(0, 0, 255));
   led.show();
   led.clear();
+  led.show();
 
   // Camera trigger pins — idle LOW, driven HIGH during ascent
   pinMode(USER_GPIO_CAM1, OUTPUT);
@@ -578,8 +579,10 @@ void CB_ReadAltimeter(void *) {
 #ifdef RA_STACK_HWM_ENABLED
     stack_hwm.altimeter = uxTaskGetStackHighWaterMark(NULL);
 #endif
-    mtx_spi.exec([]() { ReadAltimeter(0); });  // BMP581 — SPI
-    mtx_i2c.exec([]() { ReadAltimeter(1); });  // MS5611 — I2C
+    if (altimeter_source == 0 || altimeter_source == 2)
+      mtx_spi.exec([]() { ReadAltimeter(0); });  // BMP581 — SPI
+    if (altimeter_source == 1 || altimeter_source == 2)
+      mtx_i2c.exec([]() { ReadAltimeter(1); });  // MS5611 — I2C
 
     const bool ok0 = sensors_health.altimeter[0] == SensorStatus::SENSOR_OK;
     const bool ok1 = sensors_health.altimeter[1] == SensorStatus::SENSOR_OK;
@@ -594,7 +597,7 @@ void CB_ReadAltimeter(void *) {
         data.altimeter_active = ok1 ? data.altimeter[1] : data.altimeter[0];
       }
     } else {
-      data.altimeter_active = data.altimeter[0];
+      data.altimeter_active = ok0 ? data.altimeter[0] : data.altimeter[1];
     }
     // Update KF with measurement (real or simulated — altitude_m is already set correctly)
     mtx_kf.exec([&]() {
@@ -891,7 +894,7 @@ void CB_Transmit(void *) {
     hal::rtos::delay_ms(500);
     send_to(dest2);
     hal::rtos::delay_ms(500);
-    packet_count++;
+    mtx_buf.exec([&]() { ++packet_count; });
   });
 }
 
@@ -1280,7 +1283,6 @@ void setup() {
   UserSetupSPI();
   UserSetupI2C();
   UserSetupSensor(from_sleep);
-  EEPROM_Init();
   /* END GPIO AND INTERFACES SETUP */
 
   /* BEGIN FILTERS SETUP */
@@ -1314,6 +1316,10 @@ void setup() {
     else
       sensors_health.altimeter[i] = SensorStatus::SENSOR_ERR;
   }
+  // Prefer BMP581; fall back to MS5611 only if BMP581 failed to init
+  if (sensors_health.altimeter[0] != SensorStatus::SENSOR_OK &&
+      sensors_health.altimeter[1] == SensorStatus::SENSOR_OK)
+    altimeter_source = 1;
   /* END SENSORS SETUP */
 
   Serial.println(printable_sensor_status(sensors_health.altimeter[0]));
@@ -1323,16 +1329,14 @@ void setup() {
   if constexpr (RA_EEPROM_ENABLED) {
     EEPROM_Read();
     delay(4000);
-    ReadAltimeter(0);
-    alt_ref = data.altimeter[0].altitude_m;
+    alt_ref = SampleAltRef();
     servo_a.write(pos_a);  // re-sync servo hardware to restored position
     servo_b.write(pos_b);
     Serial.println("[EEPROM] Restore attempted");
   } else {
     // Zero altitude reference
     delay(4000);
-    ReadAltimeter(0);
-    alt_ref = data.altimeter[0].altitude_m;
+    alt_ref = SampleAltRef();
   }
 
   bno_cal.init(static_cast<float>(BNO_MOUNT_OFFSET));
@@ -1510,14 +1514,9 @@ void EvalFSM() {
 
     case UserState::LANDED: {
       if (fsm.on_enter()) {
-        for (size_t i = 0; i < 3; ++i)
-          controller.driver.write_speed(ServoDriver::IDS[i], 0);
         hal::rtos::delay_ms(60ul * 1000ul);  // let cameras record for 1 minute after landing
         digitalWrite(USER_GPIO_CAM1, LOW);
         digitalWrite(USER_GPIO_CAM2, LOW);
-        if constexpr (RA_LED_ENABLED) {
-          digitalWrite(USER_GPIO_BUZZER, 1);
-        }
       }
       break;
     }
@@ -1560,6 +1559,37 @@ void ReadAltimeter(size_t i) {
   data.alt_fresh                = true;
 }
 
+// Reads the active altimeter 20 times and returns the average altitude of
+// the valid samples. Used to set a stable alt_ref at ground level.
+double SampleAltRef() {
+  constexpr int SAMPLES = 20;
+  double sum   = 0.0;
+  int    count = 0;
+  for (int n = 0; n < SAMPLES; ++n) {
+    double alt = 0.0;
+    if (altimeter_source == 2) {
+      ReadAltimeter(0);
+      ReadAltimeter(1);
+      const bool ok0 = sensors_health.altimeter[0] == SensorStatus::SENSOR_OK;
+      const bool ok1 = sensors_health.altimeter[1] == SensorStatus::SENSOR_OK;
+      if (ok0 && ok1)
+        alt = (data.altimeter[0].altitude_m + data.altimeter[1].altitude_m) * 0.5;
+      else if (ok0)
+        alt = data.altimeter[0].altitude_m;
+      else if (ok1)
+        alt = data.altimeter[1].altitude_m;
+    } else {
+      ReadAltimeter(altimeter_source);
+      alt = data.altimeter[altimeter_source].altitude_m;
+    }
+    if (alt != 0.0) {
+      sum += alt;
+      ++count;
+    }
+  }
+  return count > 0 ? sum / count : 0.0;
+}
+
 void ReadGNSS() {
   if (pvalid.m10s) {
     // checkUblox() drains the I2C RX FIFO without blocking — autoPVT pushes
@@ -1581,7 +1611,7 @@ void ReadGNSS() {
       snprintf(data.utc, sizeof(data.utc), "%02d:%02d:%02d",
                data.hh, data.mm, data.ss);
 
-      gps_fixed        = data.siv != 0;
+      gps_fixed        = m10s.getFixType(UBLOX_CUSTOM_MAX_WAIT) >= 2;
       current_location = {data.latitude, data.longitude};
       data.gps_fresh   = true;
     }
@@ -1695,7 +1725,7 @@ void AutoZeroAlt() {
       sampler.add_sample(std::abs(vel));
       if (sampler.is_sampled()) {
         if (sampler.under_by_over<double>() > 3.0)  // 75%
-          alt_ref = data.altimeter[0].altitude_m;
+          alt_ref = data.altimeter_active.altitude_m;
         sampler.reset();
       }
       break;
@@ -1812,8 +1842,7 @@ void HandleCommand(const String &rx) {
     /* ========== CAL ========== */
   } else if (strcmp(p2, "CAL") == 0) {
     if (!p3) {
-      ReadAltimeter(0);
-      alt_ref = data.altimeter[0].altitude_m;
+      alt_ref = SampleAltRef();
     } else if (strcmp(p3, "TOF") == 0) {
       // VL53L1X offset calibration at given distance
       if (!pvalid.tof) {
@@ -2046,8 +2075,8 @@ void HandleCommand(const String &rx) {
         ++last_nack;
         return;
       }
-      pos_a = constrain(a, 0.0, 100.0);
-      servo_a.write(pos_a * 1.8);
+      pos_a = constrain(a, 0.0, 100.0) * 1.8;
+      servo_a.write(pos_a);
     } else if (strcmp(p3, "B") == 0) {
       const double b = strtod(p4, &end);
       if (end == p4 || *end != '\0') {
