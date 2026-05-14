@@ -868,17 +868,16 @@ void CB_SDLogger(void *) {
 }
 
 void CB_Transmit(void *) {
-  String        snap;
-  uint8_t       xbee_tx_buf[1025];
-  XBeeAddress64 dest1(XBEE_DEST_ADDR_MSB, XBEE_DEST_ADDR_LSB);
-  XBeeAddress64 dest2(XBEE_DEST_ADDR2_MSB, XBEE_DEST_ADDR2_LSB);
+  String  snap;
+  uint8_t xbee_tx_buf[1025];
   snap.reserve(1024);
 
-  auto send_to = [&](XBeeAddress64 &dest) {
+  auto send_to = [&](uint64_t addr) {
     if (!telemetry_enabled) return;
     mtx_buf.exec([&]() { snap = tx_buf; });
     mtx_uart.exec([&]() {
-      size_t len = min(snap.length(), sizeof(xbee_tx_buf) - 1);
+      XBeeAddress64 dest(addr);
+      size_t        len = min(snap.length(), sizeof(xbee_tx_buf) - 1);
       memcpy(xbee_tx_buf, snap.c_str(), len);
       xbee_tx_buf[len] = '\n';
       Tx64Request tx   = Tx64Request(dest, ACK_OPTION, xbee_tx_buf, (uint8_t) (len + 1), DEFAULT_FRAME_ID);
@@ -886,14 +885,14 @@ void CB_Transmit(void *) {
     });
   };
 
-  hal::rtos::interval_loop(1, [&]() -> TickType_t { return 1; }, [&]() -> void {
+  hal::rtos::interval_loop(1000ul, [&]() -> void {
 #ifdef RA_STACK_HWM_ENABLED
     stack_hwm.transmit = uxTaskGetStackHighWaterMark(NULL);
 #endif
-    send_to(dest1);
-    hal::rtos::delay_ms(500);
-    send_to(dest2);
-    hal::rtos::delay_ms(500);
+    for (const auto &d : dst) {
+      send_to(d);
+      hal::rtos::delay_ms(100);
+    }
     mtx_buf.exec([&]() { ++packet_count; });
   });
 }
@@ -956,6 +955,11 @@ void CB_ReceiveCommand(void *) {
         if (xbFeedByte((uint8_t) XbeeSerial.read())) {
           if (xb_buf[0] == 0x90 && xb_len >= 12) {
             // RX Indicator: 1 type + 8 src addr + 2 reserved + 1 options = 12 header bytes
+            XBeeAddress64 src_addr(
+              ((uint32_t)xb_buf[1] << 24) | ((uint32_t)xb_buf[2] << 16) | ((uint32_t)xb_buf[3] << 8) | xb_buf[4],
+              ((uint32_t)xb_buf[5] << 24) | ((uint32_t)xb_buf[6] << 16) | ((uint32_t)xb_buf[7] << 8) | xb_buf[8]
+            );
+            rx_src_addr = src_addr.get();
             uint8_t plen = (uint8_t) (xb_len - 12);
             char    tmp[256];
             uint8_t safe = min(plen, (uint8_t) 255);
@@ -1770,9 +1774,13 @@ void HandleCommand(const String &rx) {
       ++last_nack;
       return;
     }
-    if (strcmp(p3, "ON") == 0)
+    if (strcmp(p3, "ON") == 0) {
       telemetry_enabled = true;
-    else if (strcmp(p3, "OFF") == 0)
+      uint64_t src = rx_src_addr;
+      if (dst.find(src) == -1) {
+        dst.push(src);
+      }
+    } else if (strcmp(p3, "OFF") == 0)
       telemetry_enabled = false;
     else {
       ++last_nack;
@@ -2373,7 +2381,7 @@ void ConstructString() {
     << controller.last_angles[2];  // SERVO_3_ANGLE (deg)
 
   csv_stream_lf(local_tx)
-    << filter_alt.kf.state_vector()[1]
+    // << filter_alt.kf.state_vector()[1]
     << 1043          // TEAM_ID
     << data.utc      // MISSION_TIME
     << packet_count  // PACKET_COUNT

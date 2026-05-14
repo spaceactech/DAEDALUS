@@ -16,6 +16,10 @@ bool     simActivated = false;
 uint32_t simPressure  = 101325u;
 String   rx_message   = "";
 
+/* XBee address registry — registered via CXON command */
+xcore::stack_t<uint64_t, 4> dst;
+uint64_t                     rx_src_addr = 0;
+
 /* ACK / NACK counters */
 uint32_t last_ack;
 uint32_t last_nack;
