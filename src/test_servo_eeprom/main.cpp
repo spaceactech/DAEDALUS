@@ -50,6 +50,11 @@ static bool eeprom_write_word(uint8_t id, uint8_t addr, uint16_t val) {
   return ack >= 0;
 }
 
+static void flush_servo_bus() {
+  ServoSerial.flush();
+  while (ServoSerial.available()) ServoSerial.read();
+}
+
 static void dump_eeprom(uint8_t id) {
   Serial.printf("\n── EEPROM dump: servo %d ──\n", id);
 
@@ -76,6 +81,7 @@ static void dump_eeprom(uint8_t id) {
   Serial.printf("  OFS          : %d\n", (int16_t) ofs);
   Serial.printf("  MODE         : %d  (0=servo 1=wheel 2=torque)\n", mode);
   Serial.println("────────────────────────────────");
+  flush_servo_bus();
 }
 
 // ─── Command parser ───────────────────────────────────────────────────────────
@@ -83,6 +89,8 @@ static void dump_eeprom(uint8_t id) {
 static void handle_command(String &line) {
   line.trim();
   if (line.length() == 0) return;
+
+  flush_servo_bus();
 
   // Tokenise
   String tok[5];
@@ -183,10 +191,11 @@ void setup() {
 
   // Quick scan: ping IDs 1–5
   Serial.println("Scanning IDs 1-5...");
-//   for (uint8_t id = 1; id <= 5; id++) {
-//     if (hlscl.Ping(id) == id)
-//       Serial.printf("  [FOUND] servo ID %d\n", id);
-//   }
+  for (uint8_t id = 1; id <= 5; id++) {
+    if (hlscl.Ping(id) == id)
+      Serial.printf("  [FOUND] servo ID %d\n", id);
+  }
+  flush_servo_bus();
 
   Serial.println("\nCommands:");
   Serial.println("  ping <id>");
@@ -202,11 +211,11 @@ void setup() {
 }
 
 void loop() {
-  //   if (Serial.available()) {
-  //     String line = Serial.readStringUntil('\n');
-  //     handle_command(line);
-  //   }
-  //   hlscl.WriteSpe(3, 1000, 255, 500);
+    if (Serial.available()) {
+      String line = Serial.readStringUntil('\n');
+      handle_command(line);
+    }
+    // hlscl.WriteSpe(3, 1000, 255, 500);
   //   delay(1000);
   //   hlscl.WriteSpe(3, 0, 255, 500);
   //   delay(1000);
@@ -214,10 +223,10 @@ void loop() {
   //   delay(1900);
   //   controller.driver.write_speed(3, 1000);
   //   delay(1900);
-  for (size_t i = 0; i < 3; ++i)
-    controller.driver.write_speed(ServoDriver::IDS[i], 0);
-  delay(3000);
-  for (size_t i = 0; i < 3; ++i)
-    controller.driver.write_speed(ServoDriver::IDS[i], 1000);
-  delay(3000);
+  // for (size_t i = 0; i < 3; ++i)
+  //   controller.driver.write_speed(ServoDriver::IDS[i], 0);
+  // delay(3000);
+  // for (size_t i = 0; i < 3; ++i)
+  //   controller.driver.write_speed(ServoDriver::IDS[i], 1000);
+  // delay(3000);
 }

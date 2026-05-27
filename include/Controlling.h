@@ -18,7 +18,7 @@ using numeric_vector = xcore::numeric_vector<Size>;
 
 constexpr double EARTH_RADIUS_M         = 6371000.0;
 constexpr double MAX_DISTANCE_TO_TARGET = 59.16;
-constexpr double MAX_SERVO_SPEED        = 800.0;
+constexpr double MAX_SERVO_SPEED        = 150.0;
 
 constexpr double SPOOL_RADIUS = 0.0109;
 
@@ -29,10 +29,10 @@ constexpr double dL_max = 0.298758;  //30 degree
 
 constexpr double ENC_TO_DEG = 360.0 / 4096.0;  // **Change
 
-// KP reduced from 2.5 and KD raised from 0.15 to damp 478 deg/s peak yaw oscillations
-constexpr double KP = 1.5;
+// KP lowered to reduce near-target jitter; KD kept modest to avoid noise amplification
+constexpr double KP = 1.0;
 constexpr double KI = 0.0;
-constexpr double KD = 0.15;
+constexpr double KD = 0.1;
 
 // Bearing EMA alpha — controls force-vector smoothing (sector selection uses raw bearing)
 inline float at = 0.2f;

@@ -889,7 +889,7 @@ void CB_Transmit(void *) {
 #ifdef RA_STACK_HWM_ENABLED
     stack_hwm.transmit = uxTaskGetStackHighWaterMark(NULL);
 #endif
-    for (const auto &d : dst) {
+    for (const auto &d: dst) {
       send_to(d);
       hal::rtos::delay_ms(100);
     }
@@ -956,10 +956,9 @@ void CB_ReceiveCommand(void *) {
           if (xb_buf[0] == 0x90 && xb_len >= 12) {
             // RX Indicator: 1 type + 8 src addr + 2 reserved + 1 options = 12 header bytes
             XBeeAddress64 src_addr(
-              ((uint32_t)xb_buf[1] << 24) | ((uint32_t)xb_buf[2] << 16) | ((uint32_t)xb_buf[3] << 8) | xb_buf[4],
-              ((uint32_t)xb_buf[5] << 24) | ((uint32_t)xb_buf[6] << 16) | ((uint32_t)xb_buf[7] << 8) | xb_buf[8]
-            );
-            rx_src_addr = src_addr.get();
+              ((uint32_t) xb_buf[1] << 24) | ((uint32_t) xb_buf[2] << 16) | ((uint32_t) xb_buf[3] << 8) | xb_buf[4],
+              ((uint32_t) xb_buf[5] << 24) | ((uint32_t) xb_buf[6] << 16) | ((uint32_t) xb_buf[7] << 8) | xb_buf[8]);
+            rx_src_addr  = src_addr.get();
             uint8_t plen = (uint8_t) (xb_len - 12);
             char    tmp[256];
             uint8_t safe = min(plen, (uint8_t) 255);
@@ -1567,8 +1566,8 @@ void ReadAltimeter(size_t i) {
 // the valid samples. Used to set a stable alt_ref at ground level.
 double SampleAltRef() {
   constexpr int SAMPLES = 20;
-  double sum   = 0.0;
-  int    count = 0;
+  double        sum     = 0.0;
+  int           count   = 0;
   for (int n = 0; n < SAMPLES; ++n) {
     double alt = 0.0;
     if (altimeter_source == 2) {
@@ -1776,7 +1775,7 @@ void HandleCommand(const String &rx) {
     }
     if (strcmp(p3, "ON") == 0) {
       telemetry_enabled = true;
-      uint64_t src = rx_src_addr;
+      uint64_t src      = rx_src_addr;
       if (dst.find(src) == -1) {
         dst.push(src);
       }
@@ -2356,8 +2355,10 @@ void ConstructString() {
 
     << data.cmd_echo  // CMD_ECHO
     << data.armed     // ARM_STATE
-
-    << data.heading
+    << data.deploy
+    
+    << std::fmod(std::fmod(data.yaw - SPOOL_PHYSICAL_OFFSET, 360.0) + 360.0, 360.0)
+    << data.heading_gps
 
     << data.roll
     << data.pitch
@@ -2372,6 +2373,12 @@ void ConstructString() {
     << pos_a  // Servo A
     << pos_b
     << data.cpu_temp
+
+    << controller.guidance.last_bearing_raw        // BEARING_RAW (deg, global, pre-drift-PID)
+    << controller.guidance.last_corrected_bearing  // BEARING_CORRECTED (deg, post-drift-PID)
+    << data.velocity_e
+    << data.velocity_n
+
     << servo_target_angles[0]  // SERVO_1_TARGET (deg)
     << servo_target_angles[1]  // SERVO_2_TARGET (deg)
     << servo_target_angles[2]  // SERVO_3_TARGET (deg)
@@ -2381,7 +2388,6 @@ void ConstructString() {
     << controller.last_angles[2];  // SERVO_3_ANGLE (deg)
 
   csv_stream_lf(local_tx)
-    // << filter_alt.kf.state_vector()[1]
     << 1043          // TEAM_ID
     << data.utc      // MISSION_TIME
     << packet_count  // PACKET_COUNT
@@ -2416,14 +2422,15 @@ void ConstructString() {
 
     << data.cmd_echo  // CMD_ECHO
     << data.armed     // ARM_STATE
+    << data.deploy
 
     << std::fmod(std::fmod(data.yaw - SPOOL_PHYSICAL_OFFSET, 360.0) + 360.0, 360.0)
     << data.heading_gps
+
     << controller.guidance.last_bearing_raw        // BEARING_RAW (deg, global, pre-drift-PID)
     << controller.guidance.last_corrected_bearing  // BEARING_CORRECTED (deg, post-drift-PID)
     << data.velocity_e
     << data.velocity_n
-    << data.deploy
     // << RA_APOGEE_ALT
     // << RA_MAIN_ALT_COMPENSATED
     // << RA_LAUNCH_ALT

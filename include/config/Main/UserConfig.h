@@ -30,10 +30,10 @@ constexpr double BNO_MOUNT_OFFSET     = 106.6;  // PCB mounting correction (degr
 
 // Spool 1 physical offset from magnetometer reference (degrees)
 // constexpr double SPOOL_PHYSICAL_OFFSET = 0.0;  // For test
-constexpr double SPOOL_PHYSICAL_OFFSET = 45.0;  // For CanSat
+constexpr double SPOOL_PHYSICAL_OFFSET = 50.0;  // For CanSat
 
 // Stack High Water Mark (define to enable per-thread RAM reporting via serial)
-#define RA_STACK_HWM_ENABLED
+// #define RA_STACK_HWM_ENABLED
 
 // Minimum free stack words before a task is flagged with '!' in HWM output
 // (uxTaskGetStackHighWaterMark returns words; 1 word = 4 bytes on ARM Cortex-M)
@@ -126,13 +126,13 @@ constexpr double RA_TRUE_TO_FALSE_RATIO = 1.0;  // (#True / #False), 0.5 = 33.3%
 constexpr bool RA_FSM_TIME_GUARD_APOGEE_ENABLED = true;
 constexpr bool RA_FSM_TIME_GUARD_MAIN_ENABLED = false;
 
-// Time to apogee = 11.44
+// Time to apogee = 11.69
 
 // Safeguard minimum time to apogee - drogue deployment
-constexpr uint32_t RA_TIME_TO_APOGEE_MIN = 10.94 * 1000ul;  // ms
+constexpr uint32_t RA_TIME_TO_APOGEE_MIN = 11.19 * 1000ul;  // ms
 
 // Safeguard maximum time to apogee - drogue deployment
-constexpr uint32_t RA_TIME_TO_APOGEE_MAX = 11.94 * 1000ul;  // ms
+constexpr uint32_t RA_TIME_TO_APOGEE_MAX = 12.19 * 1000ul;  // ms
 
 // Launch acceleration: acc. threshold (GT)
 constexpr double RA_LAUNCH_ACC = 9.81 * 5.0;  // 9.81 m/s^2 (g)
@@ -143,7 +143,7 @@ constexpr uint32_t RA_LAUNCH_TON     = 200ul;  // ms
 constexpr uint32_t RA_LAUNCH_SAMPLES = RA_LAUNCH_TON / RA_INTERVAL_FSM_EVAL;
 
 // Apogee altitude (nominal for safeguard calculation, runtime-adjustable via SET,APOGEE_ALT)
-inline double RA_APOGEE_ALT = 850.0;  // m
+inline double RA_APOGEE_ALT = 682.0;  // m
 
 // Velocity at Apogee: vel. threshold (LT)
 inline double RA_APOGEE_VEL = 12.5;  // m/s
@@ -162,7 +162,7 @@ constexpr double RA_INS_ALT_RAW = 2.0;  // m
 // INS deployment baro thresholds (runtime-adjustable via SET,INS_TOF / SET,INS_NEAR / SET,INS_CRIT)
 inline double RA_INS_TOF_THRESHOLD  = RA_INS_ALT_RAW;  // m — TOF trigger
 inline double RA_INS_NEAR_THRESHOLD = 1.5;             // m — baro near-ground trigger
-inline double RA_INS_CRIT_THRESHOLD = 2.0;             // m — baro critical trigger
+inline double RA_INS_CRIT_THRESHOLD = 2.25;             // m — baro critical trigger
 
 // Safeguard overspeed threshold to main deployment
 constexpr double RA_MAIN_OVERSPEED_VEL = RA_DROGUE_VEL * 1.5;
@@ -183,10 +183,10 @@ constexpr double RA_INS_COMPENSATION_MULT  = 2.0;
 constexpr double RA_INS_ALT_COMPENSATED = RA_INS_ALT_RAW + RA_INS_COMPENSATION_MULT * RA_MAIN_VEL * (static_cast<double>(RA_MAIN_TON) / 1000.);  // m
 
 // Main Deployment Event Altitude: altitude threshold (LT)
-constexpr double RA_MAIN_ALT_RAW = 668.0;  // m
+constexpr double RA_MAIN_ALT_RAW = 545.6;  // m
 
 // Main deployment altitude default (APOGEE state auto-overrides with apogee_raw * 0.8)
-inline double RA_MAIN_ALT_COMPENSATED = RA_MAIN_ALT_RAW * 0.8;  // m — runtime-adjustable via SET,MAIN_ALT
+inline double RA_MAIN_ALT_COMPENSATED = RA_APOGEE_ALT * 0.8;  // m — runtime-adjustable via SET,MAIN_ALT
 
 // Safeguard nominal time to main deployment
 inline uint32_t RA_TIME_TO_MAIN_NOM = static_cast<uint32_t>((RA_APOGEE_ALT - RA_MAIN_ALT_RAW) / RA_DROGUE_VEL) * 1000ul;  // ms
@@ -198,7 +198,7 @@ inline uint32_t RA_TIME_TO_MAIN_MIN = RA_TIME_TO_MAIN_NOM * (1.00 - 0.15);  // m
 inline uint32_t RA_TIME_TO_MAIN_MAX = RA_TIME_TO_MAIN_NOM * (1.00 + 0.05);  // ms
 
 // Velocity at Landed State: vel. threshold (LT)
-constexpr double RA_LANDED_ALT = 1.0;  // m
+constexpr double RA_LANDED_ALT = 5.0;  // m
 
 // Velocity at Landed State detection period
 constexpr uint32_t RA_LANDED_TON     = 20000ul;  // ms
