@@ -102,6 +102,20 @@ float pos_a = RA_SERVO_A_LOCK;
 float pos_b = RA_SERVO_B_LOCK;
 /* END ACTUATORS */
 
+static inline void write_servo_a(float angle) {
+  servo_a.attach(USER_GPIO_SERVO_A, RA_SERVO_A_MIN, RA_SERVO_A_MAX, RA_SERVO_A_MAX);
+  servo_a.write(angle);
+  hal::rtos::delay_ms(100);
+  servo_a.detach();
+}
+
+static inline void write_servo_b(float angle) {
+  servo_b.attach(USER_GPIO_SERVO_B, RA_SERVO_MIN, RA_SERVO_MAX, RA_SERVO_MAX);
+  servo_b.write(angle);
+  hal::rtos::delay_ms(100);
+  servo_b.detach();
+}
+
 volatile bool ins_thresholds_dirty = false;
 volatile bool apogee_alt_dirty     = false;
 
@@ -370,13 +384,11 @@ void UserSetupActuator() {
 
 
   //DEPLOYMENT SERVO
-  servo_a.attach(USER_GPIO_SERVO_A, RA_SERVO_A_MIN, RA_SERVO_A_MAX, RA_SERVO_A_MAX);
-  servo_a.write(pos_a + 10);
-  servo_a.write(pos_a);
+  write_servo_a(pos_a + 10);
+  write_servo_a(pos_a);
 
-  servo_b.attach(USER_GPIO_SERVO_B, RA_SERVO_MIN, RA_SERVO_MAX, RA_SERVO_MAX);
-  servo_b.write(pos_b + 10);
-  servo_b.write(pos_b);
+  write_servo_b(pos_b + 10);
+  write_servo_b(pos_b);
 }
 
 void UserSetupCDC() {
@@ -575,6 +587,7 @@ void CB_ReadIMU(void *) {
 }
 
 void CB_ReadAltimeter(void *) {
+  xcore::NbDelay ms5611_delay(100ul, millis);
   hal::rtos::interval_loop(RA_INTERVAL_ALTIMETER_READING, [&]() -> void {
 #ifdef RA_STACK_HWM_ENABLED
     stack_hwm.altimeter = uxTaskGetStackHighWaterMark(NULL);
@@ -582,7 +595,7 @@ void CB_ReadAltimeter(void *) {
     if (altimeter_source == 0 || altimeter_source == 2)
       mtx_spi.exec([]() { ReadAltimeter(0); });  // BMP581 — SPI
     if (altimeter_source == 1 || altimeter_source == 2)
-      mtx_i2c.exec([]() { ReadAltimeter(1); });  // MS5611 — I2C
+      ms5611_delay([&]() { mtx_i2c.exec([]() { ReadAltimeter(1); }); });  // MS5611 — I2C, 100 ms
 
     const bool ok0 = sensors_health.altimeter[0] == SensorStatus::SENSOR_OK;
     const bool ok1 = sensors_health.altimeter[1] == SensorStatus::SENSOR_OK;
@@ -921,8 +934,9 @@ void CB_Control(void *) {
 
     // simActivated also sims CB_Control: real GPS/IMU nav is replaced by SimNav synthetic state.
 
-    // In real flight only run the spool servos during paraglider descent.
-    if (!simActivated && fsm.state() != UserState::PAYLOAD_RELEASE) return;
+    // In real flight only run the spool servos during paraglider descent,
+    // unless cb_ctrl_enabled is set (uplink test mode with real nav data).
+    if (!simActivated && !cb_ctrl_enabled && fsm.state() != UserState::PAYLOAD_RELEASE) return;
 
     // Smooth yaw through sin/cos EMA to handle 0/360 wrap.  Raw body yaw had
     // 103 deg std in flight, injecting noise into theta_offset at 20 Hz and
@@ -1333,8 +1347,8 @@ void setup() {
     EEPROM_Read();
     delay(4000);
     alt_ref = SampleAltRef();
-    servo_a.write(pos_a);  // re-sync servo hardware to restored position
-    servo_b.write(pos_b);
+    write_servo_a(pos_a);  // re-sync servo hardware to restored position
+    write_servo_b(pos_b);
     Serial.println("[EEPROM] Restore attempted");
   } else {
     // Zero altitude reference
@@ -1564,30 +1578,42 @@ void ReadAltimeter(size_t i) {
 
 // Reads the active altimeter 20 times and returns the average altitude of
 // the valid samples. Used to set a stable alt_ref at ground level.
+// Two paths depending on scheduler state:
+//   Pre-scheduler (setup): direct ReadAltimeter() calls are safe — no concurrent I2C.
+//   Post-scheduler (CAL cmd): reads data.altimeter_active produced by CB_ReadAltimeter
+//     under its mutex to avoid racing the I2C bus (MS5611 yields inside convert(),
+//     allowing CB_ReadAltimeter to corrupt the ongoing transaction).
 double SampleAltRef() {
-  constexpr int SAMPLES = 20;
-  double        sum     = 0.0;
-  int           count   = 0;
-  for (int n = 0; n < SAMPLES; ++n) {
-    double alt = 0.0;
-    if (altimeter_source == 2) {
-      ReadAltimeter(0);
-      ReadAltimeter(1);
-      const bool ok0 = sensors_health.altimeter[0] == SensorStatus::SENSOR_OK;
-      const bool ok1 = sensors_health.altimeter[1] == SensorStatus::SENSOR_OK;
-      if (ok0 && ok1)
-        alt = (data.altimeter[0].altitude_m + data.altimeter[1].altitude_m) * 0.5;
-      else if (ok0)
-        alt = data.altimeter[0].altitude_m;
-      else if (ok1)
-        alt = data.altimeter[1].altitude_m;
-    } else {
-      ReadAltimeter(altimeter_source);
-      alt = data.altimeter[altimeter_source].altitude_m;
+  constexpr int      SAMPLES         = 20;
+  constexpr uint32_t SAMPLE_INTERVAL = RA_INTERVAL_ALTIMETER_READING + 10;
+  double             sum             = 0.0;
+  int                count           = 0;
+
+  if (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) {
+    for (int n = 0; n < SAMPLES; ++n) {
+      hal::rtos::delay_ms(SAMPLE_INTERVAL);
+      const double alt = data.altimeter_active.altitude_m;
+      if (alt != 0.0) { sum += alt; ++count; }
     }
-    if (alt != 0.0) {
-      sum += alt;
-      ++count;
+  } else {
+    for (int n = 0; n < SAMPLES; ++n) {
+      double alt = 0.0;
+      if (altimeter_source == 2) {
+        ReadAltimeter(0);
+        ReadAltimeter(1);
+        const bool ok0 = sensors_health.altimeter[0] == SensorStatus::SENSOR_OK;
+        const bool ok1 = sensors_health.altimeter[1] == SensorStatus::SENSOR_OK;
+        if (ok0 && ok1)
+          alt = (data.altimeter[0].altitude_m + data.altimeter[1].altitude_m) * 0.5;
+        else if (ok0)
+          alt = data.altimeter[0].altitude_m;
+        else if (ok1)
+          alt = data.altimeter[1].altitude_m;
+      } else {
+        ReadAltimeter(altimeter_source);
+        alt = data.altimeter[altimeter_source].altitude_m;
+      }
+      if (alt != 0.0) { sum += alt; ++count; }
     }
   }
   return count > 0 ? sum / count : 0.0;
@@ -1713,6 +1739,8 @@ void ActivateDeployment(const size_t index) {
 }
 
 void RetainDeployment() {
+  const auto s = fsm.state();
+  if (s < UserState::ASCENT || s > UserState::PAYLOAD_RELEASE) return;
   servo_a.write(pos_a);
   servo_b.write(pos_b);
 }
@@ -2027,10 +2055,10 @@ void HandleCommand(const String &rx) {
     if (strcmp(p3, "PL") == 0) {
       if (strcmp(p4, "ON") == 0) {
         pos_a = RA_SERVO_A_RELEASE;
-        servo_a.write(pos_a);
+        write_servo_a(pos_a);
       } else if (strcmp(p4, "OFF") == 0) {
         pos_a = RA_SERVO_A_LOCK;
-        servo_a.write(pos_a);
+        write_servo_a(pos_a);
       } else {
         ++last_nack;
         return;
@@ -2038,10 +2066,10 @@ void HandleCommand(const String &rx) {
     } else if (strcmp(p3, "INS") == 0) {
       if (strcmp(p4, "ON") == 0) {
         pos_b = RA_SERVO_B_RELEASE;
-        servo_b.write(pos_b);
+        write_servo_b(pos_b);
       } else if (strcmp(p4, "OFF") == 0) {
         pos_b = RA_SERVO_B_LOCK;
-        servo_b.write(pos_b);
+        write_servo_b(pos_b);
       } else {
         ++last_nack;
         return;
@@ -2083,7 +2111,7 @@ void HandleCommand(const String &rx) {
         return;
       }
       pos_a = constrain(a, 0.0, 100.0) * 1.8;
-      servo_a.write(pos_a);
+      write_servo_a(pos_a);
     } else if (strcmp(p3, "B") == 0) {
       const double b = strtod(p4, &end);
       if (end == p4 || *end != '\0') {
@@ -2091,7 +2119,7 @@ void HandleCommand(const String &rx) {
         return;
       }
       pos_b = constrain(b, 0.0, 180.0);
-      servo_b.write(pos_b);
+      write_servo_b(pos_b);
     } else {
       ++last_nack;
       return;
@@ -2116,6 +2144,10 @@ void HandleCommand(const String &rx) {
   } else if (strcmp(p2, "ARM") == 0) {
     data.armed[0] = 'A';
     data.armed[1] = '\0';
+    servo_a.attach(USER_GPIO_SERVO_A, RA_SERVO_A_MIN, RA_SERVO_A_MAX, RA_SERVO_A_MAX);
+    servo_a.write(RA_SERVO_A_LOCK);
+    servo_b.attach(USER_GPIO_SERVO_B, RA_SERVO_MIN, RA_SERVO_MAX, RA_SERVO_MAX);
+    servo_b.write(RA_SERVO_B_LOCK);
 
     /* ========== DISARM ========== */
   } else if (strcmp(p2, "DISARM") == 0) {
@@ -2239,6 +2271,21 @@ void HandleCommand(const String &rx) {
     Serial.printf("  at_ctrl      : %.4f\n", fc.ctrl_ema_alpha);
     Serial.printf("  hdband       : %.2f deg\n", fc.heading_deadband_deg);
     Serial.println("[EEPROM] --- end ---");
+
+    /* ========== CTRL ========== */
+  } else if (strcmp(p2, "CTRL") == 0) {
+    if (!p3) {
+      ++last_nack;
+      return;
+    }
+    if (strcmp(p3, "ON") == 0) {
+      cb_ctrl_enabled = true;
+    } else if (strcmp(p3, "OFF") == 0) {
+      cb_ctrl_enabled = false;
+    } else {
+      ++last_nack;
+      return;
+    }
 
     /* ========== UNKNOWN ========== */
   } else {

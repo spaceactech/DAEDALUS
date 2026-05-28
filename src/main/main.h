@@ -5,7 +5,7 @@
 #include <math.h>
 #include "Controlling.h"
 
-GPSCoordinate target_location = {13.723133359918828, 100.51516142821684};
+GPSCoordinate target_location = {37.56128825626417, -77.45677546665657};
 
 /* Telemetry control */
 bool telemetry_enabled = false;  // need to false
@@ -15,6 +15,9 @@ bool     simEnabled   = false;
 bool     simActivated = false;
 uint32_t simPressure  = 101325u;
 String   rx_message   = "";
+
+/* CB_Control test mode — runs guidance with real nav data regardless of FSM state */
+bool cb_ctrl_enabled = false;
 
 /* XBee address registry — registered via CXON command */
 xcore::stack_t<uint64_t, 4> dst;
