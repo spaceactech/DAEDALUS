@@ -151,6 +151,7 @@ void EEPROM_Read() {
   FlashConfig fc{};
   if (FLASH_Config_Read(fc)) {
     fsm.transfer(static_cast<UserState>(fc.state));
+    fsm.on_enter();  // consume flag so EvalFSM doesn't re-trigger GPIO side-effects on boot
     at                   = fc.bearing_ema_alpha;
     at_ctrl              = fc.ctrl_ema_alpha;
     HEADING_DEADBAND_DEG = fc.heading_deadband_deg;
@@ -319,7 +320,7 @@ struct StackHWM {
 
 
 /* BEGIN USER SETUP */
-void UserSetupGPIO() {
+void UserSetupGPIOBuzzer() {
   if constexpr (RA_LED_ENABLED) {
     pinMode(USER_GPIO_BUZZER, OUTPUT);
     digitalToggle(USER_GPIO_BUZZER);
@@ -336,12 +337,6 @@ void UserSetupGPIO() {
   led.clear();
   led.show();
 
-  // Camera trigger pins — idle LOW, driven HIGH during ascent
-  pinMode(USER_GPIO_CAM1, OUTPUT);
-  pinMode(USER_GPIO_CAM2, OUTPUT);
-  digitalWrite(USER_GPIO_CAM1, LOW);
-  digitalWrite(USER_GPIO_CAM2, LOW);
-
   // Sensors reset GPIO
   pinMode(BNO08X_RESET, OUTPUT);  // idle HIGH — bno.begin() owns the reset sequence
 
@@ -351,6 +346,17 @@ void UserSetupGPIO() {
   digitalWrite(M10S_RESET, 0);
   delay(100);
   digitalWrite(M10S_RESET, 1);
+}
+
+void UserSetupGPIOCamera() {
+  // Camera trigger pins — idle LOW, driven HIGH during ascent.
+  // Pre-set ODR before configuring OUTPUT so the pin never glitches HIGH.
+  digitalWrite(USER_GPIO_CAM1, LOW);
+  digitalWrite(USER_GPIO_CAM2, LOW);
+  pinMode(USER_GPIO_CAM1, OUTPUT);
+  pinMode(USER_GPIO_CAM2, OUTPUT);
+  digitalWrite(USER_GPIO_CAM1, LOW);
+  digitalWrite(USER_GPIO_CAM2, LOW);
 }
 
 void UserSetupLowPower() {
@@ -559,6 +565,14 @@ void UserSetupSD() {
                     "SERVO_1_ANGLE,SERVO_2_ANGLE,SERVO_3_ANGLE,"
                     "SERVO_1_TARGET,SERVO_2_TARGET,SERVO_3_TARGET\r\n";
     fs_sd.file().flush();
+
+    // Three short beeps: SD init OK
+    for (int i = 0; i < 3; ++i) {
+      digitalWrite(USER_GPIO_BUZZER, HIGH);
+      delay(100);
+      digitalWrite(USER_GPIO_BUZZER, LOW);
+      delay(100);
+    }
   }
 }
 /* END USER SETUP */
@@ -906,7 +920,8 @@ void CB_Transmit(void *) {
       send_to(d);
       hal::rtos::delay_ms(100);
     }
-    mtx_buf.exec([&]() { ++packet_count; });
+    if (telemetry_enabled)
+      mtx_buf.exec([&]() { ++packet_count; });
   });
 }
 
@@ -937,6 +952,9 @@ void CB_Control(void *) {
     // In real flight only run the spool servos during paraglider descent,
     // unless cb_ctrl_enabled is set (uplink test mode with real nav data).
     if (!simActivated && !cb_ctrl_enabled && fsm.state() != UserState::PAYLOAD_RELEASE) return;
+
+    // Uplink-settable protection: block all servo output when engaged.
+    if (control_protected) return;
 
     // Smooth yaw through sin/cos EMA to handle 0/360 wrap.  Raw body yaw had
     // 103 deg std in flight, injecting noise into theta_offset at 20 Hz and
@@ -1292,8 +1310,9 @@ void setup() {
   tx_buf.reserve(1024);
 
   /* BEGIN GPIO AND INTERFACES SETUP */
+  UserSetupGPIOBuzzer();
   UserSetupSD();
-  UserSetupGPIO();
+  UserSetupGPIOCamera();
   UserSetupUSART();
   UserSetupActuator();
   UserSetupCDC();
@@ -1534,6 +1553,7 @@ void EvalFSM() {
         hal::rtos::delay_ms(60ul * 1000ul);  // let cameras record for 1 minute after landing
         digitalWrite(USER_GPIO_CAM1, LOW);
         digitalWrite(USER_GPIO_CAM2, LOW);
+        telemetry_enabled = false;
       }
       break;
     }
@@ -1803,6 +1823,7 @@ void HandleCommand(const String &rx) {
     }
     if (strcmp(p3, "ON") == 0) {
       telemetry_enabled = true;
+      mtx_buf.exec([&]() { packet_count = 0; });
       uint64_t src      = rx_src_addr;
       if (dst.find(src) == -1) {
         dst.push(src);
@@ -2041,6 +2062,15 @@ void HandleCommand(const String &rx) {
         return;
       }
       altimeter_source = static_cast<uint8_t>(val);
+    } else if (strcmp(p3, "CTRL_PROT") == 0) {
+      if (strcmp(p4, "ON") == 0) {
+        control_protected = true;
+      } else if (strcmp(p4, "OFF") == 0) {
+        control_protected = false;
+      } else {
+        ++last_nack;
+        return;
+      }
     } else {
       ++last_nack;
       return;
@@ -2144,6 +2174,8 @@ void HandleCommand(const String &rx) {
   } else if (strcmp(p2, "ARM") == 0) {
     data.armed[0] = 'A';
     data.armed[1] = '\0';
+    digitalWrite(USER_GPIO_CAM1, HIGH);
+    digitalWrite(USER_GPIO_CAM2, HIGH);
     servo_a.attach(USER_GPIO_SERVO_A, RA_SERVO_A_MIN, RA_SERVO_A_MAX, RA_SERVO_A_MAX);
     servo_a.write(RA_SERVO_A_LOCK);
     servo_b.attach(USER_GPIO_SERVO_B, RA_SERVO_MIN, RA_SERVO_MAX, RA_SERVO_MAX);
@@ -2287,6 +2319,23 @@ void HandleCommand(const String &rx) {
       return;
     }
 
+    /* ========== CAM ========== */
+  } else if (strcmp(p2, "CAM") == 0) {
+    if (!p3) {
+      ++last_nack;
+      return;
+    }
+    if (strcmp(p3, "ON") == 0) {
+      digitalWrite(USER_GPIO_CAM1, HIGH);
+      digitalWrite(USER_GPIO_CAM2, HIGH);
+    } else if (strcmp(p3, "OFF") == 0) {
+      digitalWrite(USER_GPIO_CAM1, LOW);
+      digitalWrite(USER_GPIO_CAM2, LOW);
+    } else {
+      ++last_nack;
+      return;
+    }
+
     /* ========== UNKNOWN ========== */
   } else {
     ++last_nack;
@@ -2317,12 +2366,15 @@ void ConstructString() {
   // Build into locals first — no lock held during string construction or ADC read.
   static String     local_sd, local_tx;
   static String     s_baro_alt, s_lat, s_lon, s_alt_agl, s_temp, s_press, s_volt, s_gps_alt;
+  static String     s_sd_lat, s_sd_lon;
   static const bool _init = [] {
     local_sd.reserve(4096);
     local_tx.reserve(1024);
     s_baro_alt.reserve(16);
     s_lat.reserve(16);
     s_lon.reserve(16);
+    s_sd_lat.reserve(16);
+    s_sd_lon.reserve(16);
     s_alt_agl.reserve(16);
     s_temp.reserve(12);
     s_press.reserve(12);
@@ -2340,6 +2392,10 @@ void ConstructString() {
   s_lat = _nb;
   snprintf(_nb, sizeof(_nb), "%.4f", data.longitude);
   s_lon = _nb;
+  snprintf(_nb, sizeof(_nb), "%.6f", data.latitude);
+  s_sd_lat = _nb;
+  snprintf(_nb, sizeof(_nb), "%.6f", data.longitude);
+  s_sd_lon = _nb;
   snprintf(_nb, sizeof(_nb), "%.1f", alt_agl);
   s_alt_agl = _nb;
   snprintf(_nb, sizeof(_nb), "%.1f", data.altimeter_active.temperature);
@@ -2392,8 +2448,8 @@ void ConstructString() {
     // 18–22 GPS
     << data.utc           // GPS_TIME
     << data.altitude_msl  // GPS_ALTITUDE (m, 0.1)
-    << data.latitude      // GPS_LATITUDE
-    << data.longitude     // GPS_LONGITUDE
+    << s_sd_lat      // GPS_LATITUDE
+    << s_sd_lon      // GPS_LONGITUDE
     << data.siv           // GPS_SATS
 
     << data.velocity_e
@@ -2420,6 +2476,9 @@ void ConstructString() {
     << pos_a  // Servo A
     << pos_b
     << data.cpu_temp
+
+    << last_ack
+    << last_nack
 
     << controller.guidance.last_bearing_raw        // BEARING_RAW (deg, global, pre-drift-PID)
     << controller.guidance.last_corrected_bearing  // BEARING_CORRECTED (deg, post-drift-PID)
@@ -2472,22 +2531,22 @@ void ConstructString() {
     << data.deploy
 
     << std::fmod(std::fmod(data.yaw - SPOOL_PHYSICAL_OFFSET, 360.0) + 360.0, 360.0)
-    << data.heading_gps
+    << data.heading_gps;
 
-    << controller.guidance.last_bearing_raw        // BEARING_RAW (deg, global, pre-drift-PID)
-    << controller.guidance.last_corrected_bearing  // BEARING_CORRECTED (deg, post-drift-PID)
-    << data.velocity_e
-    << data.velocity_n
-    // << RA_APOGEE_ALT
-    // << RA_MAIN_ALT_COMPENSATED
-    // << RA_LAUNCH_ALT
-    // << RA_INS_CRIT_THRESHOLD
-    << servo_target_angles[0]      // SERVO_1_TARGET (deg)
-    << controller.last_angles[0]   // SERVO_1_ANGLE (deg)
-    << servo_target_angles[1]      // SERVO_2_TARGET (deg)
-    << controller.last_angles[1]   // SERVO_2_ANGLE (deg)
-    << servo_target_angles[2]      // SERVO_3_TARGET (deg)
-    << controller.last_angles[2];  // SERVO_3_ANGLE (deg);
+    // << controller.guidance.last_bearing_raw        // BEARING_RAW (deg, global, pre-drift-PID)
+    // << controller.guidance.last_corrected_bearing  // BEARING_CORRECTED (deg, post-drift-PID)
+    // << data.velocity_e
+    // << data.velocity_n
+    // // << RA_APOGEE_ALT
+    // // << RA_MAIN_ALT_COMPENSATED
+    // // << RA_LAUNCH_ALT
+    // // << RA_INS_CRIT_THRESHOLD
+    // << servo_target_angles[0]      // SERVO_1_TARGET (deg)
+    // << controller.last_angles[0]   // SERVO_1_ANGLE (deg)
+    // << servo_target_angles[1]      // SERVO_2_TARGET (deg)
+    // << controller.last_angles[1]   // SERVO_2_ANGLE (deg)
+    // << servo_target_angles[2]      // SERVO_3_TARGET (deg)
+    // << controller.last_angles[2];  // SERVO_3_ANGLE (deg);
 
   mtx_buf.exec([&]() {
     sd_buf = local_sd;
